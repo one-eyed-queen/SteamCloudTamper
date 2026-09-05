@@ -78,10 +78,12 @@ public static class PoolScanner
             var (tagged, _) = ScanUserData(accountDir, account3);
             foreach (var t in tagged)
             {
+                // rebuild the barcode payload faithfully (both seps included, even when uid/date are absent)
+                var payload = $"{t.GameAppId}{Barcode.Sep}{t.UserId3 ?? string.Empty}{Barcode.Sep}{(t.TaggedOn.HasValue ? t.TaggedOn.Value.ToString("ddMMyyyy") : string.Empty)}";
                 reg.Upsert(new GameSlot(
                     t.GameAppId, t.StorageAppId, t.FileName,
                     Ferry.UnparkName(t.FileName).OriginalName,
-                    t.Size, DateTime.UtcNow, $"{t.GameAppId}{Barcode.Sep}{t.UserId3}{Barcode.Sep}{t.TaggedOn:ddMMyyyy}",
+                    t.Size, DateTime.UtcNow, payload,
                     "scanned"));
             }
         }
@@ -91,9 +93,12 @@ public static class PoolScanner
 
     private static byte[] ReadTail(string path, long count)
     {
+        if (count <= 0) return [];
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        fs.Seek(-count, SeekOrigin.End);
-        var buf = new byte[count];
+        var length = fs.Length;
+        if (length <= 0) return []; // seek(-0, End) would throw, and empty files never carry a trailer
+        fs.Seek(-Math.Min(count, length), SeekOrigin.End); // clamp: file may have been truncated mid-tail
+        var buf = new byte[Math.Min(count, length)];
         fs.ReadExactly(buf);
         return buf;
     }

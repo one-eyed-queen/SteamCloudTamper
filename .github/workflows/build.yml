@@ -1,0 +1,25 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore SteamCloudTamper.slnx
+
+      - name: Build
+        run: dotnet build SteamCloudTamper.slnx --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test SteamCloudTamper.slnx --no-build --logger "console;verbosity=normal"

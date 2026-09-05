@@ -104,5 +104,10 @@ public sealed class SteamConsole
         return true;
     }
 
-    public static bool IsOpen() => FindConsoleWindow() != IntPtr.Zero && IsWindow(FindConsoleWindow());
+    public static bool IsOpen()
+    {
+        // take the handle once - the old double EnumWindows raced the window closing mid-check
+        var hwnd = FindConsoleWindow();
+        return hwnd != IntPtr.Zero && IsWindow(hwnd);
+    }
 }

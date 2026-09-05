@@ -77,7 +77,7 @@ public class PoolDbTests
     [Fact]
     public void OwnedReservedTierIsBelowCutoff()
     {
-        Assert.Empty(PoolDb.Usable().Where(p => p.Tier == SlotTier.OwnedReserved));
+        Assert.DoesNotContain(PoolDb.Usable(), p => p.Tier == SlotTier.OwnedReserved);
     }
 }
 

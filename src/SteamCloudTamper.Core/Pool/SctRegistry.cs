@@ -11,7 +11,8 @@ public sealed record GameSlot(
     DateTime ParkedAt,
     string? BarcodePayload,
     string Status,
-    string? Posture = null)
+    string? Posture = null,
+    bool? Verified = null)
 {
     public static GameSlot New(uint game, uint storage, string stored, string original, long size, string barcode)
         => new(game, storage, stored, original, size, DateTime.UtcNow, barcode, "parked");
@@ -22,6 +23,9 @@ public sealed record GameSlot(
     /// (staged offline, client never confirmed it). Recorded by the lane that wrote it.
     /// </summary>
     public GameSlot WithPosture(string posture) => this with { Posture = posture };
+
+    /// <summary>True when a post-park re-enumerate confirmed the uploaded sha on the wire.</summary>
+    public GameSlot WithVerify(bool verified) => this with { Verified = verified };
 }
 
 /// <summary>

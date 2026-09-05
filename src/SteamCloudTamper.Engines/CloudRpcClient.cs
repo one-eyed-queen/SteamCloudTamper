@@ -9,9 +9,82 @@ public sealed class CloudRpcClient(SteamSession session)
 {
     private Cloud _service = null!;
 
-    private Cloud Service => _service ??= session.Client.GetHandler<SteamUnifiedMessages>()!.CreateService<Cloud>();
+    private Cloud Service
+    {
+        get
+        {
+            if (!session.IsLoggedOn)
+                throw new CloudRpcException("not logged on to Steam - a real session is required for cloud RPCs");
+            var handlers = session.Client.GetHandler<SteamUnifiedMessages>();
+            return handlers is null
+                ? throw new CloudRpcException("SteamUnifiedMessages handler unavailable - reconnect and retry")
+                : _service ??= handlers.CreateService<Cloud>();
+        }
+    }
 
     private static async Task<T> AwaitJob<T>(AsyncJob<T> job) where T : CallbackMsg => await job.ToTask().ConfigureAwait(false);
+
+    /// <summary>Runs a unified-message RPC with bounded retry on transient EResult/network failures.</summary>
+    private static async Task<SteamUnifiedMessages.ServiceMethodResponse<TResp>> CallAsync<TResp>(
+        Func<AsyncJob<SteamUnifiedMessages.ServiceMethodResponse<TResp>>> jobFactory, CancellationToken ct)
+        where TResp : ProtoBuf.IExtensible, new()
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var resp = await AwaitJob(jobFactory());
+                if (attempt < MaxRetries && IsTransient(resp.Result))
+                {
+                    await Task.Delay(RetryDelay(attempt), ct);
+                    continue;
+                }
+                return resp;
+            }
+            catch (Exception ex) when (attempt < MaxRetries && IsTransient(ex))
+            {
+                await Task.Delay(RetryDelay(attempt), ct);
+            }
+        }
+    }
+
+    /// <summary>Transient failures worth a bounded retry (network, server hiccups).</summary>
+    private static bool IsTransient(EResult r)
+        => r is EResult.RemoteCallFailed or EResult.Timeout or EResult.ServiceUnavailable or EResult.Busy;
+
+    private static bool IsTransient(Exception ex)
+        => ex switch
+        {
+            HttpRequestException => true,
+            TaskCanceledException => true,
+            CloudRpcException { Result: { } r } => IsTransient(r),
+            _ => false,
+        };
+
+    private const int MaxRetries = 2;
+
+    private static TimeSpan RetryDelay(int attempt) => TimeSpan.FromMilliseconds(300 * Math.Pow(2, attempt));
+
+    private static readonly HttpClient Http = new()
+    {
+        Timeout = TimeSpan.FromSeconds(60),
+    };
+
+    private static async Task<T> WithRetryAsync<T>(Func<Task<T>> op, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await op().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < MaxRetries && (IsTransient(ex) || ex is HttpRequestException or TaskCanceledException))
+            {
+                var delay = TimeSpan.FromMilliseconds(300 * Math.Pow(2, attempt));
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+        }
+    }
 
     public static Policy FromResult(EResult r) => r switch
     {
@@ -32,13 +105,13 @@ public sealed class CloudRpcClient(SteamSession session)
 
         try
         {
-            var r = await AwaitJob(Service.EnumerateUserFiles(new CCloud_EnumerateUserFiles_Request
+            var r = await CallAsync(() => Service.EnumerateUserFiles(new CCloud_EnumerateUserFiles_Request
             {
                 appid = appId,
                 extended_details = false,
                 count = 1,
                 start_index = 0,
-            }));
+            }), ct);
             enumPolicy = FromResult(r.Result);
             detail.Add($"enumerate={r.Result}");
         }
@@ -56,11 +129,11 @@ public sealed class CloudRpcClient(SteamSession session)
 
             if (up.Result == EResult.OK)
             {
-                var del = await AwaitJob(Service.Delete(new CCloud_Delete_Request
+                var del = await CallAsync(() => Service.Delete(new CCloud_Delete_Request
                 {
                     appid = appId,
                     filename = probeName,
-                }));
+                }), ct);
                 deletePolicy = FromResult(del.Result);
                 detail.Add($"delete={del.Result}");
             }
@@ -85,13 +158,13 @@ public sealed class CloudRpcClient(SteamSession session)
 
         while (true)
         {
-            var resp = await AwaitJob(Service.EnumerateUserFiles(new CCloud_EnumerateUserFiles_Request
+            var resp = await CallAsync(() => Service.EnumerateUserFiles(new CCloud_EnumerateUserFiles_Request
             {
                 appid = appId,
                 extended_details = false,
                 count = 100,
                 start_index = start,
-            }));
+            }), ct);
 
             if (resp.Result != EResult.OK)
                 throw new CloudRpcException($"EnumerateUserFiles({appId}) failed: {resp.Result}");
@@ -117,11 +190,11 @@ public sealed class CloudRpcClient(SteamSession session)
 
     public async Task<(bool Ok, EResult Result)> DeleteAsync(uint appId, string filename, CancellationToken ct = default)
     {
-        var resp = await AwaitJob(Service.Delete(new CCloud_Delete_Request
+        var resp = await CallAsync(() => Service.Delete(new CCloud_Delete_Request
         {
             appid = appId,
             filename = filename,
-        }));
+        }), ct);
 
         return (resp.Result == EResult.OK, resp.Result);
     }
@@ -135,62 +208,67 @@ public sealed class CloudRpcClient(SteamSession session)
         using var sha = System.Security.Cryptography.SHA1.Create();
         var fileSha = Hex.Encode(sha.ComputeHash(data));
 
-        var begin = await AwaitJob(Service.BeginHTTPUpload(new CCloud_BeginHTTPUpload_Request
+        var begin = await CallAsync(() => Service.BeginHTTPUpload(new CCloud_BeginHTTPUpload_Request
         {
             appid = appId,
             filename = filename,
             file_size = (uint)data.Length,
             file_sha = fileSha,
             is_public = false,
-        }));
+        }), ct);
 
         if (begin.Result != EResult.OK) throw new CloudRpcException($"BeginHTTPUpload({appId}/{filename}) failed: {begin.Result}");
 
         var url = (begin.Body.use_https ? "https://" : "http://") + begin.Body.url_host + begin.Body.url_path;
 
-        using var http = new HttpClient();
-        using var req = new HttpRequestMessage(HttpMethod.Put, url);
-        foreach (var h in begin.Body.request_headers) req.Headers.TryAddWithoutValidation(h.name, h.value);
-        req.Content = new ByteArrayContent(data);
+        using var httpResp = await WithRetryAsync(async () =>
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Put, url);
+            foreach (var h in begin.Body.request_headers) req.Headers.TryAddWithoutValidation(h.name, h.value);
+            req.Content = new ByteArrayContent(data);
+            var r = await Http.SendAsync(req, ct);
+            r.EnsureSuccessStatusCode();
+            return r;
+        }, ct);
 
-        using var httpResp = await http.SendAsync(req, ct);
-        httpResp.EnsureSuccessStatusCode();
-
-        return await AwaitJob(Service.CommitHTTPUpload(new CCloud_CommitHTTPUpload_Request
+        return await CallAsync(() => Service.CommitHTTPUpload(new CCloud_CommitHTTPUpload_Request
         {
             transfer_succeeded = true,
             appid = appId,
             filename = filename,
             file_sha = fileSha,
-        }));
+        }), ct);
     }
 
     public async Task<byte[]?> DownloadAsync(uint appId, string filename, CancellationToken ct = default)
     {
-        var resp = await AwaitJob(Service.ClientFileDownload(new CCloud_ClientFileDownload_Request
+        var resp = await CallAsync(() => Service.ClientFileDownload(new CCloud_ClientFileDownload_Request
         {
             appid = appId,
             filename = filename,
-        }));
+        }), ct);
 
         if (resp.Result != EResult.OK) throw new CloudRpcException($"ClientFileDownload({appId}/{filename}) failed: {resp.Result}");
 
         var url = (resp.Body.use_https ? "https://" : "http://") + resp.Body.url_host + resp.Body.url_path;
-        using var client = new HttpClient();
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        foreach (var h in resp.Body.request_headers) req.Headers.TryAddWithoutValidation(h.name, h.value);
 
-        using var r = await client.SendAsync(req, ct);
-        r.EnsureSuccessStatusCode();
+        using var r = await WithRetryAsync(async () =>
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            foreach (var h in resp.Body.request_headers) req.Headers.TryAddWithoutValidation(h.name, h.value);
+            var rr = await Http.SendAsync(req, ct);
+            rr.EnsureSuccessStatusCode();
+            return rr;
+        }, ct);
         return await r.Content.ReadAsByteArrayAsync(ct);
     }
 
     public async Task<Quota> QuotaAsync(uint appId, CancellationToken ct = default)
     {
-        var resp = await AwaitJob(Service.ClientGetAppQuotaUsage(new CCloud_ClientGetAppQuotaUsage_Request
+        var resp = await CallAsync(() => Service.ClientGetAppQuotaUsage(new CCloud_ClientGetAppQuotaUsage_Request
         {
             appid = appId,
-        }));
+        }), ct);
 
         if (resp.Result != EResult.OK) throw new CloudRpcException($"ClientGetAppQuotaUsage({appId}) failed: {resp.Result}");
 
@@ -203,4 +281,7 @@ public sealed class CloudRpcClient(SteamSession session)
     }
 }
 
-public sealed class CloudRpcException(string message) : Exception(message);
+public sealed class CloudRpcException(string message, SteamKit2.EResult? result = null) : Exception(message)
+{
+    public SteamKit2.EResult? Result { get; } = result;
+}

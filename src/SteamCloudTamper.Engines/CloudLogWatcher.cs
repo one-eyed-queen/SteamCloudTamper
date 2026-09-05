@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using SteamCloudTamper.Core;
 
 namespace SteamCloudTamper.Engines;
 
@@ -38,29 +38,27 @@ public sealed class CloudLogWatcher
 
     /// <summary>
     /// Waits up to <paramref name="timeout"/> for a verdict about <see cref="AppId"/>.
-    /// Reads the log incrementally (own watermark, never rewinds), so an old line from
-    /// a previous run can only be missed, never re-credited.
+    /// Reads the log incrementally with a byte-exact watermark (see <see cref="CloudLogTail"/>),
+    /// so an old line from a previous run can only be missed, never re-credited, and no line
+    /// is re-read just because other apps wrote after it.
     /// </summary>
     public async Task<CloudWatchResult> WaitForVerdictAsync(TimeSpan timeout, CancellationToken ct = default)
     {
-        var watermark = File.Exists(_logPath) ? new FileInfo(_logPath).Length : 0;
+        var watermark = File.Exists(_logPath) ? new FileInfo(_logPath).Length : 0L;
         var deadline = DateTime.UtcNow + timeout;
         var seen = new List<string>();
 
         while (DateTime.UtcNow < deadline)
         {
-            var lines = ReadNewLines(watermark);
+            var lines = CloudLogTail.ReadMatchingLines(_logPath, ref watermark, AppId);
             if (lines.Count > 0)
             {
-                watermark += lines.Sum(l => (long)l.Length);
                 seen.AddRange(lines);
                 foreach (var l in lines) Log?.Invoke(l);
 
                 var verdict = Classify(seen);
                 if (verdict != CloudVerdict.Unknown)
-                {
                     return new CloudWatchResult(verdict, seen.LastOrDefault(), seen.Count);
-                }
             }
 
             try { await Task.Delay(500, ct); }
@@ -68,27 +66,6 @@ public sealed class CloudLogWatcher
         }
 
         return new CloudWatchResult(Classify(seen), seen.LastOrDefault(), seen.Count);
-    }
-
-    private List<string> ReadNewLines(long watermark)
-    {
-        var list = new List<string>();
-        if (!File.Exists(_logPath)) return list;
-        try
-        {
-            using var fs = new FileStream(_logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (fs.Length <= watermark) return list;
-            fs.Seek(watermark, SeekOrigin.Begin);
-            using var reader = new StreamReader(fs);
-            while (reader.ReadLine() is { } line)
-            {
-                if (line.Contains($"[AppID {AppId}]", StringComparison.OrdinalIgnoreCase)
-                    || line.Contains($"[appid {AppId}]", StringComparison.OrdinalIgnoreCase))
-                    list.Add(line);
-            }
-        }
-        catch (IOException) { }
-        return list;
     }
 
     private static CloudVerdict Classify(IReadOnlyList<string> lines)

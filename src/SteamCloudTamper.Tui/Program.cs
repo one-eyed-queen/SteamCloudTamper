@@ -8,7 +8,8 @@ namespace SteamCloudTamper.Tui;
 
 public static class Program
 {
-    private const string ConfigPath = "steamcloudtamper.json";
+    // config lives at SCT_CONFIG env var, else the legacy CWD steamcloudtamper.json (same as the CLI)
+    private static readonly string ConfigPath = AppConfig.ResolveDefaultPath();
 
     private static AppConfig _cfg = null!;
     private static string _steamPath = "";
@@ -677,14 +678,30 @@ public static class Program
 
     private static async Task WipeScreenAsync()
     {
+        var guarded = _cfg.GuardedAppIds;
         var targets = _buckets
+            .Where(b => !guarded.Contains(b.AppId))
             .SelectMany(b => b.Files.Select(f => (Bucket: b, f)))
             .ToList();
-        if (targets.Count == 0) { AnsiConsole.MarkupLine("[dim]no local buckets[/]"); return; }
+        if (targets.Count == 0)
+        {
+            AnsiConsole.MarkupLine(guarded.Count > 0
+                ? "[dim]no wipable buckets left (guarded buckets are filtered)[/]"
+                : "[dim]no locally cached bucket files[/]");
+            return;
+        }
+        if (guarded.Count > 0)
+            AnsiConsole.MarkupLine($"[dim]{_buckets.Count(b => guarded.Contains(b.AppId))} guarded bucket(s) hidden - guards are never-touch[/]");
 
         var labels = targets.Select(t => $"{t.Bucket.AppId}/{t.f.FileName} ({HumanSize(t.f.FileSize)})").ToList();
         var pick = AnsiConsole.Prompt(new SelectionPrompt<string>().Title(TuiFx.Title("Choose file to wipe")).AddChoices(labels));
         var chosen = targets[labels.IndexOf(pick)];
+
+        if (guarded.Contains(chosen.Bucket.AppId))
+        {
+            AnsiConsole.MarkupLine($"[red]REFUSED[/] {chosen.Bucket.AppId} is guarded (never-touch list)");
+            return;
+        }
 
         await using var session = await ConnectSessionAsync();
         if (session is null) return;
@@ -697,6 +714,7 @@ public static class Program
         if (AnsiConsole.Confirm("Run?"))
         {
             var outcome = await engine.WipeAsync(rpc, chosen.Bucket.AppId, chosen.f.FileName, blank);
+            _cfg.Save(); // persist the auto-guard added after a successful delete
             AnsiConsole.MarkupLine(outcome.Success
                 ? $"[green]OK[/] {outcome.Result}"
                 : $"[red]FAIL[/] {outcome.Result}");

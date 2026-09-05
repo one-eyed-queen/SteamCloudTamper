@@ -81,7 +81,7 @@ trailer that tells you wtf it is. anti-ban is the whole point. dont ruin it.
 - `tools/steamcloudsave` - `SteamCloudSave.dll`, a steam_api64 shim / shadow lane for games that should
   never touch your real cloud. mounts: shim, gbe `load_dlls`, OST `[inject]`.
 - `integrations/opensteamtool` - OST toml snippet, lua pool snippet, the "make the gui show synced" writeup.
-- `tests/SteamCloudTamper.Core.Tests` - xunit. 30 passing. the ones that ssh into steam are the fun ones.
+- `tests/SteamCloudTamper.Core.Tests` - xunit. 54 passing. the ones that ssh into steam are the fun ones.
 
 ## commands
 
@@ -103,11 +103,13 @@ parking brain (anti-ban: private saves, real apps, never public flooding):
                                OST lua addappid hooks + CloudRedirect host + SLS/GreenLuma configs.
                                each container gets kind/source/posture + AutoClouded flag, snapshot
                                lands in the registry. --net also reads cloud_log for the AutoCloud part.
-    pool probe [--uid <id3>] [--force] [--wait-sec N]
+    pool probe [--uid <id3>] [--force] [--wait-sec N] [--lane client|rpc] [--console]
                                one private file, let the RUNNING steam client sync it, read the verdict
                                from cloud_log. verdicts go to the registry. nobody logs in. its neat.
+                               --lane rpc probes writability directly through a real SCT logon instead;
+                               --console re-enables the (unreliable on new builds) Steam Console push.
 park <gameAppId> [--uid <id3>] [--force] [--lane auto|client|rpc|stage] [--bucket <appid>]
-         [--spread N] [--copies N] [--stealth] [--wait-sec N]
+         [--spread N] [--copies N] [--stealth] [--wait-sec N] [--verify] [--console]
          [--allow-owned] [--posture real,provider,redirected|any]
                                auto   = steam up + right account -> client lane; else rpc
                                client = stage local, the signed-in session does the upload
@@ -130,16 +132,27 @@ park <gameAppId> [--uid <id3>] [--force] [--lane auto|client|rpc|stage] [--bucke
                                         get parked under a sls-<game>/ namespace inside your own bucket
                                         (a la Ace SLS, no client hook needed - see APPID-PROXY.md).
                                         rpc-only. auto-resolves from the CloudProxies map.
+                               --verify re-enumerates each bucket right after uploading and sha-compares
+                                        what's on the wire (config VerifyAfterPark=true makes it a habit).
     proxy status | set <game> <proxy> | rm <game> | ls
                                 the appid-proxy map: game -> owned bucket. game 0 = default for
                                 EVERY unowned game without its own entry. lives in the config.
-    client status | sync <appid> [--down] | tell <command>
+    client status | sync <appid> [--down] [--console] | tell <command>
                                client lane: status / force a sync tick / raw console cmd.
-                               (the steam console is blocked on modern client builds - we checked,
-                               like, three times - so sync rides the AutoCloud tick instead)
+                               sync rides the AutoCloud tick; add --console to opt back into
+                               the Steam Console push (works on old client builds).
     provider status | init [sync-dir] | ls [--uid <id3>] [--app <appid>]
                                CloudRedirect folder-provider management (SCT writes the config)
     unpark <storageAppId> <name> [outdir]    download + strip barcode, original bytes back
+    restore <gameAppId> [--uid <id3>] [--force] [--out <dir>] [--json]
+                                pull a parked save BACK into the game's local bucket
+                                (registry lookup; tails userdata as fallback so it works
+                                from any machine). refuses to clobber a differing local
+                                save unless --force. parked copies stay in the cloud.
+    check [<gameAppId>] [--uid <id3>] [--json]
+                                compare every parked save vs the local game-bucket copy:
+                                match / diff / missing. exit code 1 on any diff.
+                                --json turns park/restore/check results machine-readable.
     rebuild                   tail-scan userdata -> registry.json (1000 files < 1s, ur welcome)
     barcode <file> | barcode make <payload>  show/render barcode trailers
 
@@ -194,9 +207,10 @@ most recent, the normal pecking order). when that account is live:
 - **posture tracking** - every slot records where the upload actually landed: `real` (valve),
   `provider` (CloudRedirect folder), `redirected` (ost lua hook - never touched valve), `local`
   (staged, unconfirmed). the registry screen shows it live.
-- **steam console: dead on arrival** - `steam://open/console` doesnt open on current client
-  builds (checked with `-console`, checked without, checked angry). SCT skips it, waits on the
-  autocloud tick, and the deterministic real-upload lane is rpc. sorry, youtube 2019 videos.
+- **steam console: opt-in at best** - `steam://open/console` opens on legacy client builds but not
+  current ones (checked with `-console`, checked without, checked angry). SCT skips it by default,
+  waits on the autocloud tick, and the deterministic real-upload lane is rpc. pass `--console` if
+  your client build still has a working console.
 
 ## "sync'd" in the steam GUI (OST + CloudRedirect, verified 2026-08-10)
 
@@ -280,9 +294,12 @@ permanent. like that one save from 2013. it hears you. it remembers.
 
 ## known broken / wontfix
 
-- steam console: blocked on this client build, forever onwards. lane is tick-based.
+- steam console: unreliable on current client builds, so the default lane is the tick. old-build
+  users can re-enable the push with `--console`.
 - 480 / 113200: never autoclouded by the client. rpc lane or bust (and rpc needs a real session -
   anonymous uploads are denied even for spacewar. valve said so. we screamed).
+- config location: `steamcloudtamper.json` next to the process, or wherever `SCT_CONFIG` points.
+  the registry lives separately at `%LOCALAPPDATA%\SCT\registry.json` (or `SCT_REGISTRY`).
 - no credentials ship with the program. SCT_USER/SCT_PASS or scan a QR in the TUI. reasonably
   sure you prefer "scan a qr" over "send us your password in a txt".
 
@@ -290,7 +307,7 @@ permanent. like that one save from 2013. it hears you. it remembers.
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\publish.ps1      # -> dist\SteamCloudTamper.exe
-dotnet test tests\SteamCloudTamper.Core.Tests                    # 30 passing, usually
+dotnet test tests\SteamCloudTamper.Core.Tests                    # 54 passing, usually
 ```
 
 tui extras: `SCT_TUI_ASCII=1` // `SCT_TUI_NERD=1` // `SCT_TUI_FLAT=1` if you hate gradients.

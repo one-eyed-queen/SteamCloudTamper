@@ -1,10 +1,13 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/SteamCloudTamper/SteamCloudTamper.csproj" />
     <Project Path="src/SteamCloudTamper.Cli/SteamCloudTamper.Cli.csproj" />
     <Project Path="src/SteamCloudTamper.Core/SteamCloudTamper.Core.csproj" />
     <Project Path="src/SteamCloudTamper.Engines/SteamCloudTamper.Engines.csproj" />
+    <Project Path="src/SteamCloudTamper.Tui/SteamCloudTamper.Tui.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SteamCloudTamper.Core.Tests/SteamCloudTamper.Core.Tests.csproj" />
+    <Project Path="tests/TuiHarness/TuiHarness.csproj" />
   </Folder>
 </Solution>

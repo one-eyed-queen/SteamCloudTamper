@@ -83,11 +83,22 @@ public sealed class SteamSession : IAsyncDisposable
         }
         catch (TimeoutException)
         {
-            Event?.Invoke("Timed out connecting to Steam3");
+            Event?.Invoke("Timed out connecting to Steam3 (is outbound 443 open?)");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Event?.Invoke($"Connection failed: {ex.Message}");
             return false;
         }
 
-        var user = _client.GetHandler<SteamUser>();
+        var handler = _client.GetHandler<SteamUser>();
+        if (handler is null)
+        {
+            Event?.Invoke("SteamUser handler unavailable - cannot log on");
+            return false;
+        }
+        var user = handler;
         _callbacks.Subscribe<SteamUser.LoggedOnCallback>(OnLoggedOn);
 
         try
@@ -104,7 +115,8 @@ public sealed class SteamSession : IAsyncDisposable
                 case AuthMode.Credentials:
                 {
                     Event?.Invoke("Starting credential auth...");
-                    var auth = _client.Authentication;
+                    var auth = _client.Authentication
+                        ?? throw new InvalidOperationException("SteamAuthentication service unavailable");
                     var session = await auth.BeginAuthSessionViaCredentialsAsync(new AuthSessionDetails
                     {
                         Username = username,
@@ -127,7 +139,8 @@ public sealed class SteamSession : IAsyncDisposable
                 case AuthMode.Qr:
                 {
                     Event?.Invoke("Starting QR auth - scan in the Steam mobile app...");
-                    var auth = _client.Authentication;
+                    var auth = _client.Authentication
+                        ?? throw new InvalidOperationException("SteamAuthentication service unavailable");
                     var qr = await auth.BeginAuthSessionViaQRAsync(new AuthSessionDetails
                     {
                         PlatformType = EAuthTokenPlatformType.k_EAuthTokenPlatformType_SteamClient,

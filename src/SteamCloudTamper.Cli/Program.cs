@@ -7,7 +7,8 @@ namespace SteamCloudTamper.Cli;
 
 public static class Program
 {
-    private const string ConfigPath = "steamcloudtamper.json";
+    // config lives at SCT_CONFIG env var, else the legacy CWD steamcloudtamper.json
+    private static readonly string ConfigPath = AppConfig.ResolveDefaultPath();
 
     public static async Task<int> Main(string[] args)
     {
@@ -37,6 +38,8 @@ public static class Program
                 "pool" => await PoolCmd(args, config),
                 "park" => await ParkCmd(args, config),
                 "unpark" => await UnparkCmd(args, config),
+                "restore" => await RestoreCmd(args, config),
+                "check" => await CheckCmd(args, config),
                 "client" => await ClientCmd(args, config),
                 "provider" => ProviderCmd(args, config),
                 "proxy" => await ProxyCmd(args, config),
@@ -239,6 +242,14 @@ public static class Program
         }
     }
 
+    private static string? GuardRefusal(AppConfig config, params uint[] appIds)
+    {
+        foreach (var id in appIds)
+            if (config.GuardedAppIds.Contains(id))
+                return $"appid {id} is on the never-touch list - refused (guards add|rm <appid> to change)";
+        return null;
+    }
+
     private static async Task<int> Wipe(string[] args, AppConfig config)
     {
         if (args.Length < 3 || !uint.TryParse(args[1], out var appId))
@@ -260,6 +271,13 @@ public static class Program
             proxyFor = proxiedGame;
         }
 
+        // never-touch list: refuse before any cloud mutation
+        if (GuardRefusal(config, appId, proxyFor ?? 0) is { } refusal)
+        {
+            Console.WriteLine($"REFUSED: {refusal}");
+            return 1;
+        }
+
         var blank = Has(args, "--blank");
         var dryRun = !Has(args, "--force") && config.DryRun;
         if (dryRun) Console.WriteLine("DRY-RUN (--force to execute)");
@@ -271,6 +289,7 @@ public static class Program
         var outcome = proxyFor is { } g
             ? await engine.WipeAsync(new CloudProxyLane(rpc, g, appId), file, blank)
             : await engine.WipeAsync(rpc, appId, file, blank);
+        config.Save(); // persist auto-guard added after a successful delete
 
         Console.WriteLine($"{(outcome.Success ? "OK  " : "FAIL")} [{outcome.Action}] {outcome.AppId}/{outcome.FileName}: {outcome.Result}");
         return outcome.Success ? 0 : 1;
@@ -284,12 +303,18 @@ public static class Program
             return 1;
         }
 
+        if (GuardRefusal(config, appId) is { } refusal)
+        {
+            Console.WriteLine($"REFUSED: {refusal}");
+            return 1;
+        }
+
         var blank = Has(args, "--blank");
         var dryRun = !Has(args, "--force") && config.DryRun;
         if (dryRun) Console.WriteLine("DRY-RUN (--force to execute)");
         config.DryRun = dryRun;
 
-await using var session = await ConnectSessionAsync();
+        await using var session = await ConnectSessionAsync();
         var rpc = new CloudRpcClient(session);
         var files = await rpc.EnumerateAsync(appId);
         if (files.Count == 0)
@@ -307,6 +332,7 @@ await using var session = await ConnectSessionAsync();
             if (o.Success) ok++;
             Console.WriteLine($"  {(o.Success ? "OK " : "ERR")} {f.FileName}");
         }
+        config.Save(); // persist guards added after successful deletes
 
         Console.WriteLine($"{ok}/{files.Count} succeeded");
         return ok == files.Count ? 0 : 1;
@@ -621,7 +647,7 @@ await using var session = await ConnectSessionAsync();
                 return PoolDiscoverCmd(args, config);
             }
             default:
-                Console.WriteLine("usage: pool list | refresh | probe [--uid <id3>] [--wait-sec N] | discover [--net]");
+                Console.WriteLine("usage: pool list | refresh | probe [--uid <id3>] [--wait-sec N] [--lane client|rpc] [--console] | discover [--net]");
                 return 1;
         }
     }
@@ -662,7 +688,7 @@ await using var session = await ConnectSessionAsync();
     /// Private writability probe: drops ONE tiny barcode-tagged file into each candidate
     /// slot bucket, lets the RUNNING Steam client sync it (no SCT logon), reads the verdict
     /// from cloud_log.txt, then cleans the probe back out. No anonymous flooding - one
-    /// quiet file per real app at a time.
+    /// quiet file per real app at a time. --lane rpc probes directly via a real SCT logon.
     /// </summary>
     private static async Task<int> PoolProbeCmd(string[] args, AppConfig config)
     {
@@ -673,21 +699,48 @@ await using var session = await ConnectSessionAsync();
             Console.WriteLine("no account - pass --uid <id3> or run with Steam logged in");
             return 1;
         }
-        if (!SteamLocator.IsRunning())
-        {
-            Console.WriteLine("Steam is not running - the client must be up to sync the probe and log the verdict.");
-            return 1;
-        }
 
+        var laneRpc = Has(args, "--lane") && (Arg(args, "--lane") ?? "").Equals("rpc", StringComparison.OrdinalIgnoreCase);
         var waitSec = Arg(args, "--wait-sec") is { } ws && int.TryParse(ws, out var w) ? w : 20;
         var dryRun = !Has(args, "--force") && config.DryRun;
-        Console.WriteLine($"probe account {uid}: {PoolDb.Usable().Count()} candidate slot(s), wait {waitSec}s each{ (dryRun ? " (DRY-RUN)" : "")}");
+        Console.WriteLine($"probe account {uid}: {PoolDb.Usable().Count()} candidate slot(s), lane {(laneRpc ? "rpc (SCT logon)" : "client (running Steam tick)")}" + (dryRun ? " (DRY-RUN)" : ""));
 
         var registry = SctRegistry.Load();
         var engine = new LocalInjectEngine();
         engine.Log += Console.WriteLine;
         var random = Random.Shared;
         var total = 0;
+
+        if (laneRpc)
+        {
+            // ---- rpc lane probe: real SCT logon, direct Cloud.* calls ----
+            if (dryRun)
+            {
+                foreach (var slot in PoolDb.Usable().OrderBy(p => p.Tier).ThenBy(p => p.AppId))
+                    Console.WriteLine($"  [dry] would probe {slot.AppId} ({slot.Name}) via RPC");
+                return 0;
+            }
+            await using var session = await ConnectSessionAsync();
+            var rpc = new CloudRpcClient(session);
+            foreach (var slot in PoolDb.Usable().OrderBy(p => p.Tier).ThenBy(p => p.AppId))
+            {
+                var v = await rpc.ProbeAsync(slot.AppId);
+                total++;
+                if (v.Upload == Policy.Allowed && v.Delete == Policy.Allowed)
+                {
+                    registry.PoolProbes[slot.AppId] = "VerifiedWritable";
+                    Console.WriteLine($"  {slot.AppId} ({slot.Name}): {Policy.Allowed}/{Policy.Allowed} - slot proven");
+                }
+                else
+                {
+                    registry.PoolProbes[slot.AppId] = "Denied";
+                    Console.WriteLine($"  {slot.AppId} ({slot.Name}): {v.Upload}/{v.Delete} - not writable as {uid}; slot excluded ({v.Detail})");
+                }
+                registry.Save();
+            }
+            Console.WriteLine($"rpc probe done: {total} slot(s) checked; verdicts saved to registry");
+            return 0;
+        }
 
         foreach (var slot in PoolDb.Usable().OrderBy(p => p.Tier).ThenBy(p => p.AppId))
         {
@@ -713,7 +766,7 @@ await using var session = await ConnectSessionAsync();
 
             // force the running client to sync the probe NOW via the console lane
             // (cloud_sync_up); falls back to the client's own AutoCloud tick
-            var (verdict, _, consoleAvailable) = await PushSyncViaConsoleAsync(steam, slot.AppId, waitSec);
+            var (verdict, _, consoleAvailable) = await PushSyncViaConsoleAsync(steam, slot.AppId, waitSec, useConsole: Has(args, "--console"));
             total++;
 
             switch (verdict)
@@ -785,7 +838,7 @@ await using var session = await ConnectSessionAsync();
                 }
                 var down = Has(args, "--down");
                 var waitSec = Arg(args, "--wait-sec") is { } ws && int.TryParse(ws, out var w) ? w : 25;
-                var (verdict, line, consoleAvailable) = await PushSyncViaConsoleAsync(steam, appId, waitSec, down);
+                var (verdict, line, consoleAvailable) = await PushSyncViaConsoleAsync(steam, appId, waitSec, down, useConsole: Has(args, "--console"));
 
                 var posture = SteamLocator.SyncPosture(steam, appId);
                 Console.WriteLine($"{appId}: {verdict} (posture: {posture})");
@@ -844,20 +897,36 @@ await using var session = await ConnectSessionAsync();
 
     /// <summary>
     /// Client-lane sync pressure: stage + wait for the RUNNING client's own cloud
-    /// behavior. The Steam Console (steam://open/console) is not reliably openable
-    /// on newer client builds (blocked on this machine), so the lane is tick-based:
-    /// AutoCloud'd apps push on their own, everything else gets honest guidance to
-    /// use the RPC lane. 'client tell' still exposes manual console input for
-    /// builds where it works.
+    /// behavior. With --console the Steam Console (steam://open/console) is forced
+    /// open and cloud_sync_up/down is typed into it - on newer client builds the
+    /// console is unavailable/deprecated, so that mode is opt-in and falls back to
+    /// the tick-based wait. 'client tell' still exposes manual console input for
+    /// builds where it works. Callers read --console from args to opt back in.
     /// </summary>
     private static async Task<(CloudVerdict Verdict, string? MatchLine, bool ConsoleAvailable)> PushSyncViaConsoleAsync(
-        string steam, uint appId, int waitSec, bool down = false)
+        string steam, uint appId, int waitSec, bool down = false, bool useConsole = false)
     {
         if (!SteamLocator.IsRunning())
             throw new InvalidOperationException("Steam is not running - the client lane needs the running session");
 
+        var watcher = new CloudLogWatcher(steam, appId);
+        if (useConsole)
+        {
+            if (!await SteamConsole.OpenConsoleAsync(TimeSpan.FromSeconds(15)))
+            {
+                Console.WriteLine("  [console] could not open the Steam Console - falling back to the client's own sync tick");
+                var fallback = await watcher.WaitForVerdictAsync(TimeSpan.FromSeconds(waitSec));
+                return (fallback.Verdict, fallback.MatchLine, false);
+            }
+            Console.WriteLine($"  [console] sending cloud_sync_{(down ? "down" : "up")} {appId} to the console...");
+            var sent = SteamConsole.SendCommand($"cloud_sync_{(down ? "down" : "up")} {appId}");
+            Console.WriteLine(sent ? "  [console] command accepted" : "  [console] console window not found - waiting for the client's own tick");
+            var consoleResult = await watcher.WaitForVerdictAsync(TimeSpan.FromSeconds(waitSec));
+            return (consoleResult.Verdict, consoleResult.MatchLine, true);
+        }
+
         Console.WriteLine("  [console] skipping Steam Console (not reliable on this client build) - waiting for the client's own sync tick");
-        var result = await new CloudLogWatcher(steam, appId).WaitForVerdictAsync(TimeSpan.FromSeconds(waitSec));
+        var result = await watcher.WaitForVerdictAsync(TimeSpan.FromSeconds(waitSec));
         return (result.Verdict, result.MatchLine, false);
     }
 
@@ -963,7 +1032,7 @@ await using var session = await ConnectSessionAsync();
                         var app = Path.GetFileName(appDir);
                         if (filter is not null && !app.Equals(filter.Value.ToString(), StringComparison.Ordinal)) continue;
                         var blobs = Path.Combine(appDir, "blobs");
-                        var files = Directory.Exists(blobs) ? Directory.GetFiles(blobs).Select(Path.GetFileName).ToList() : new List<string>();
+                        var files = Directory.Exists(blobs) ? Directory.GetFiles(blobs).Select(f => Path.GetFileName(f) ?? f).ToList() : new List<string>();
                         Console.WriteLine($"  {acc}/{app}: {files.Count} blob(s) [{string.Join(", ", files)}]");
                         any = true;
                     }
@@ -998,7 +1067,7 @@ await using var session = await ConnectSessionAsync();
         }
         else
         {
-            Console.WriteLine("usage: park <gameAppId> [--uid <id3>] [--force] [--lane auto|client|rpc|stage] [--bucket <appid>] [--proxy <appid>] [--spread N] [--copies N] [--stealth] [--wait-sec N] [--allow-owned] [--posture real,provider,redirected|any]");
+            Console.WriteLine("usage: park <gameAppId> [--uid <id3>] [--force] [--lane auto|client|rpc|stage] [--bucket <appid>] [--proxy <appid>] [--spread N] [--copies N] [--stealth] [--wait-sec N] [--allow-owned] [--verify] [--console] [--posture real,provider,redirected|any]");
             return 1;
         }
 
@@ -1158,7 +1227,8 @@ await using var session = await ConnectSessionAsync();
         if (lane == "client")
         {
             return await ClientLaneParkAsync(steam, uid, registry, plans, today,
-                Arg(args, "--wait-sec") is { } ws && int.TryParse(ws, out var w) ? w : 25);
+                Arg(args, "--wait-sec") is { } wsv && int.TryParse(wsv, out var wv) ? wv : 25,
+                viaConsole: Has(args, "--console"));
         }
 
         if (lane == "stage")
@@ -1188,6 +1258,7 @@ await using var session = await ConnectSessionAsync();
         }
 
         // ---- RPC lane: logon-based upload (QR / credentials / anonymous) ----
+        var verify = Has(args, "--verify") || config.VerifyAfterPark;
         await using var session = await ConnectSessionAsync();
         var rpc = new CloudRpcClient(session);
         var proxyLane = proxied ? new CloudProxyLane(rpc, gameAppId, proxyAppId) : null;
@@ -1201,15 +1272,47 @@ await using var session = await ConnectSessionAsync();
             {
                 var payloadBarcode = $"{gameAppId}{Barcode.Sep}{uid}{Barcode.Sep}{today:ddMMyyyy}";
                 var wireName = proxied ? CloudProxy.Apply(gameAppId, p.D.StoredName!) : p.D.StoredName!;
-                registry.Upsert(GameSlot.New(gameAppId, p.D.StorageAppId!.Value, wireName, p.FileName, p.Tagged.Length, payloadBarcode)
-                    .WithPosture(proxied ? "proxied" : "real"));
-                okCount++;
+
+                // verify-after-park: re-enumerate and compare the on-wire sha against what we sent
+                var verif = "unverified";
+                if (verify)
+                {
+                    var list = await rpc.EnumerateAsync(p.D.StorageAppId!.Value);
+                    var match = ProbesShaMatch(list, wireName, p.Tagged);
+                    verif = match ? "verified" : "MISMATCH";
+                    okCount += match ? 1 : 0;
+                }
+                else
+                {
+                    okCount++;
+                }
+
+                if (verif != "MISMATCH")
+                    registry.Upsert(GameSlot.New(gameAppId, p.D.StorageAppId!.Value, wireName, p.FileName, p.Tagged.Length, payloadBarcode)
+                        .WithPosture(proxied ? "proxied" : "real").WithVerify(verif == "verified"));
+                Console.WriteLine($"  {p.FileName}: {res} -> {(proxied ? CloudProxy.Apply(gameAppId, p.D.StoredName!) : p.D.StoredName)} @ {p.D.StorageAppId} [{verif}]");
             }
-            Console.WriteLine($"  {p.FileName}: {res} -> {(proxied ? CloudProxy.Apply(gameAppId, p.D.StoredName!) : p.D.StoredName)} @ {p.D.StorageAppId}");
+            else
+            {
+                Console.WriteLine($"  {p.FileName}: {res} -> {p.D.StoredName} @ {p.D.StorageAppId} [failed]");
+            }
         }
         registry.Save();
         Console.WriteLine($"{okCount}/{plans.Count} parked; registry updated");
         return 0;
+    }
+
+    /// <summary>True when the remote listing reports a file with the same name whose sha matches what we uploaded.</summary>
+    private static bool ProbesShaMatch(List<CloudFileEntry> files, string wireName, byte[] sent)
+    {
+        var shaHex = Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(sent));
+        foreach (var f in files)
+        {
+            if (!f.FileName.Equals(wireName, StringComparison.Ordinal)) continue;
+            if (string.IsNullOrEmpty(f.FileSha)) return false;
+            return f.FileSha.Equals(shaHex, StringComparison.OrdinalIgnoreCase);
+        }
+        return false;
     }
 
     /// <summary>
@@ -1222,7 +1325,7 @@ await using var session = await ConnectSessionAsync();
     /// </summary>
     private static async Task<int> ClientLaneParkAsync(string steam, uint uid, SctRegistry registry,
         List<(string FileName, ParkingDecision D, byte[] Tagged)> plans,
-        DateOnly today, int waitSec)
+        DateOnly today, int waitSec, bool viaConsole = false)
     {
         var injector = new LocalInjectEngine();
         var bySlot = plans.GroupBy(p => p.D.StorageAppId!.Value)
@@ -1239,7 +1342,7 @@ await using var session = await ConnectSessionAsync();
             injector.RegenerateVdf(Path.Combine(userDataRoot, slot.ToString()));
 
             Console.WriteLine($"  [{slot}] staged {slotPlans.Count} file(s); forcing client sync via console...");
-            var (verdict, line, consoleAvailable) = await PushSyncViaConsoleAsync(steam, slot, waitSec);
+            var (verdict, line, consoleAvailable) = await PushSyncViaConsoleAsync(steam, slot, waitSec, useConsole: viaConsole);
             Console.WriteLine($"  [{slot}] {verdict}" + (line is null ? "" : $"  <{line.Trim()}>"));
 
             switch (verdict)
@@ -1364,6 +1467,202 @@ await using var session = await ConnectSessionAsync();
         registry.Remove(storageAppId, name);
         registry.Save();
         return 0;
+    }
+
+    private static async Task<int> RestoreCmd(string[] args, AppConfig config)
+    {
+        if (args.Length < 2 || !uint.TryParse(args[1], out var gameAppId))
+        {
+            Console.WriteLine("usage: restore <gameAppId> [--uid <id3>] [--force] [--out <dir>] [--json]");
+            return 1;
+        }
+
+        var force = Has(args, "--force");
+        var asJson = Has(args, "--json");
+        var steam = ResolveSteam(config);
+        var uid = ResolveUid(args, config, steam);
+        if (uid == 0)
+        {
+            Console.WriteLine("no account - pass --uid <id3> or run with Steam logged in");
+            return 1;
+        }
+
+        var slots = SlotsForGame(steam, config, gameAppId);
+        if (slots.Count == 0)
+        {
+            Console.WriteLine($"nothing parked for game {gameAppId} (nothing in registry and nothing tagged in userdata)");
+            return 1;
+        }
+
+        await using var session = await ConnectSessionAsync();
+        var rpc = new CloudRpcClient(session);
+
+        var results = new List<RestoreResult>();
+        var gameRemoteRoot = Arg(args, "--out") is { } outDir
+            ? Path.Combine(outDir, gameAppId.ToString(), "remote")
+            : Path.Combine(steam, "userdata", uid.ToString(), gameAppId.ToString(), "remote");
+        var injector = new LocalInjectEngine();
+
+        foreach (var slot in slots.OrderBy(s => s.StorageAppId).ThenBy(s => s.StoredName))
+        {
+            var wireName = slot.StoredName;
+            var origName = slot.OriginalName.Length > 0
+                ? slot.OriginalName
+                : Ferry.UnparkName(wireName).OriginalName;
+
+            byte[]? tagged;
+            if (CloudProxy.TryStrip(wireName, out var proxiedGame, out var stripped) && config.ResolveProxy(proxiedGame) != 0)
+                tagged = await new CloudProxyLane(rpc, proxiedGame, slot.StorageAppId).DownloadAsync(stripped);
+            else
+                tagged = await rpc.DownloadAsync(slot.StorageAppId, wireName);
+
+            if (tagged is null)
+            {
+                results.Add(new RestoreResult(slot.StorageAppId, wireName, origName, "download-failed", null, null));
+                Console.WriteLine($"  [{slot.StorageAppId}] {wireName}: DOWNLOAD FAILED");
+                continue;
+            }
+
+            var clean = tagged;
+            if (Barcode.TryDecodeTail(ReadTailBytes(tagged), out var payload, out var trailerLen))
+                clean = Barcode.StripTrailer(tagged, trailerLen);
+            else
+                Console.WriteLine($"  [{slot.StorageAppId}] {wireName}: no SCT barcode trailer ({tagged.Length}b) - restoring as-is");
+
+            Directory.CreateDirectory(gameRemoteRoot);
+            var dest = Path.Combine(gameRemoteRoot, origName);
+            var status = "ok";
+            var note = "";
+            var wrote = false;
+            if (File.Exists(dest))
+            {
+                var localSha = Sha1(File.ReadAllBytes(dest));
+                var remoteSha = Sha1(clean);
+                if (localSha == remoteSha)
+                {
+                    note = "already matches the parked save (up to date)";
+                }
+                else if (!force)
+                {
+                    status = "refused";
+                    note = "local differs from the parked save (use --force to overwrite)";
+                }
+                else
+                {
+                    await File.WriteAllBytesAsync(dest, clean);
+                    wrote = true;
+                    note = "overwritten (--force)";
+                }
+            }
+            else
+            {
+                await File.WriteAllBytesAsync(dest, clean);
+                wrote = true;
+                note = $"{clean.Length}b restored";
+            }
+
+            if (wrote)
+                injector.RegenerateVdf(Path.Combine(steam, "userdata", uid.ToString(), gameAppId.ToString()));
+            results.Add(new RestoreResult(slot.StorageAppId, wireName, origName, status, clean.Length, note));
+            Console.WriteLine($"  [{slot.StorageAppId}] {wireName}: {status} {note}");
+        }
+
+        var ok = results.Count(r => r.Status == "ok");
+        if (asJson)
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(results, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        else
+            Console.WriteLine($"{ok}/{results.Count} restored; registry unchanged (the parked copies stay in the cloud)");
+        return ok == results.Count ? 0 : 1;
+    }
+
+    private sealed record RestoreResult(uint StorageAppId, string StoredName, string OriginalName, string Status, int? Bytes, string? Note);
+
+    /// <summary>Registry slots for a game; falls back to a full userdata tail-scan so restore works from anywhere.</summary>
+    private static List<GameSlot> SlotsForGame(string steam, AppConfig config, uint gameAppId)
+    {
+        var registry = SctRegistry.Load();
+        var slots = registry.Slots.Where(s => s.GameAppId == gameAppId).ToList();
+        if (slots.Count == 0)
+        {
+            Console.WriteLine($"no registry slots for {gameAppId} - tail-scanning userdata for parked files...");
+            var scanned = PoolScanner.RebuildRegistry(steam);
+            slots = scanned.Slots.Where(s => s.GameAppId == gameAppId).ToList();
+        }
+        return slots;
+    }
+
+    /// <summary>
+    /// check [<gameAppId>] [--uid <id3>] [--json] - compares each parked save in
+    /// the cloud against the copy currently sitting in the game's local bucket:
+    ///   match   = local save == parked backup
+    ///   diff    = local save differs (the in-game save moved on; re-park or restore)
+    ///   missing = the game bucket holds nothing for this slot
+    /// </summary>
+    private static async Task<int> CheckCmd(string[] args, AppConfig config)
+    {
+        var asJson = Has(args, "--json");
+        var steam = ResolveSteam(config);
+        var uid = ResolveUid(args, config, steam);
+        var registered = SctRegistry.Load().Slots;
+        var games = args.Length > 1 && uint.TryParse(args[1], out var g)
+            ? new List<uint> { g }
+            : registered.Select(s => s.GameAppId).Distinct().OrderBy(x => x).ToList();
+
+        if (games.Count == 0 || registered.Count == 0)
+        {
+            Console.WriteLine(asJson ? "[]" : "registry empty - nothing to check (park something first)");
+            return 0;
+        }
+
+        await using var session = await ConnectSessionAsync();
+        var rpc = new CloudRpcClient(session);
+        var checks = new List<CheckResult>(games.Count);
+
+        foreach (var game in games)
+        {
+            var slots = registered.Where(s => s.GameAppId == game).ToList();
+            var localRoot = Path.Combine(steam, "userdata", uid.ToString(), game.ToString(), "remote");
+            foreach (var slot in slots)
+            {
+                var wireName = slot.StoredName;
+                var origName = slot.OriginalName.Length > 0
+                    ? slot.OriginalName
+                    : Ferry.UnparkName(wireName).OriginalName;
+
+                var tagged = CloudProxy.TryStrip(wireName, out var proxiedGame, out var stripped) && config.ResolveProxy(proxiedGame) != 0
+                    ? await new CloudProxyLane(rpc, proxiedGame, slot.StorageAppId).DownloadAsync(stripped)
+                    : await rpc.DownloadAsync(slot.StorageAppId, wireName);
+
+                var remoteSha = tagged is null ? null : Sha1(StripTrailerIfAny(tagged));
+                var localPath = Path.Combine(localRoot, origName);
+                var localSha = File.Exists(localPath) ? Sha1(File.ReadAllBytes(localPath)) : null;
+
+                var state = remoteSha is null ? "download-failed"
+                    : localSha is null ? "missing"
+                    : remoteSha == localSha ? "match"
+                    : "diff";
+                checks.Add(new CheckResult(game, slot.StorageAppId, origName, state));
+                Console.WriteLine($"  [{game}] {origName} @ {slot.StorageAppId}: {state}");
+            }
+        }
+
+        if (asJson)
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(checks, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        return checks.Any(c => c.State == "diff") ? 1 : 0;
+    }
+
+    private sealed record CheckResult(uint GameAppId, uint StorageAppId, string OriginalName, string State);
+
+    private static byte[] StripTrailerIfAny(byte[] data)
+    {
+        if (!Barcode.TryDecodeTail(ReadTailBytes(data), out _, out var len)) return data;
+        return Barcode.StripTrailer(data, len);
+    }
+
+    private static string Sha1(byte[] data)
+    {
+        using var sha = System.Security.Cryptography.SHA1.Create();
+        return Convert.ToHexString(sha.ComputeHash(data));
     }
 
     private static int RebuildCmd(string[] args, AppConfig config)
@@ -1504,13 +1803,26 @@ await using var session = await ConnectSessionAsync();
                                                without it); --posture filters the candidate universe by posture
                                       (default ranking: VerifiedWritable real > AutoClouded real > probe-candidate
                                                > provider/redirected; activation containers only once real slots run out)
-                client status | sync <appid> [--down] | tell <command>
+                client status | sync <appid> [--down] [--console] | tell <command>
                                       console lane: force real sync of one bucket via the running client
                 provider status | init [sync-dir] | ls [--uid <id3>] [--app <appid>]
                                       CloudRedirect folder provider management (SCT owns the config)
                 unpark <storageAppId> <name> [outdir]   download + strip barcode
+                restore <gameAppId> [--uid <id3>] [--force] [--out <dir>] [--json]
+                                      pull a parked save back into the game's local bucket
+                                      (registry lookup; falls back to a userdata tail-scan)
+                check [<gameAppId>] [--uid <id3>] [--json]
+                                      compare every parked save vs the local game-bucket copy
+                                      (match / diff / missing); exit code 1 on any diff
                 rebuild                    tail-scan userdata -> registry.json
                 barcode <file> | barcode make <payload>   show/render barcode trailers
+            park flags: --verify re-enumerates + sha-compares each upload after parking
+                        (set config VerifyAfterPark=true to always verify); --console re-enables
+                        the Steam Console push for client-lane syncs (opt-in on newer builds)
+            pool probe --lane rpc         probe writability via a real SCT logon instead of the
+                                          running client's tick; pool probe/client sync accept --console
+            config:     SCT_CONFIG=<path> overrides the config file location
+                        (default steamcloudtamper.json next to the process)
             registry: {SctRegistry.DefaultPath()}
 
             auth: anonymous by default; env SCT_USER/SCT_PASS or SCT_AUTH_MODE=qr for account ops.

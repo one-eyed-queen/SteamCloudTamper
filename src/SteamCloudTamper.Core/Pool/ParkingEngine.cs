@@ -47,6 +47,8 @@ public sealed class ParkingEngine
 
     private readonly Func<uint, Task<RemoteBucketSnapshot?>>? _remoteProbe;
 
+    private Dictionary<uint, Task<RemoteBucketSnapshot?>>? _probeCache;
+
     /// <summary><paramref name="remoteProbe"/> returns null when the lane is offline (offline guess mode).</summary>
     public ParkingEngine(
         HashSet<uint> owned,
@@ -153,6 +155,7 @@ public sealed class ParkingEngine
         }
 
         var decisions = new List<ParkingDecision>();
+        SeedRemoteProbes(candidates); // one parallel fan-out, then reads are instant
         for (var i = 0; i < files.Count; i++)
         {
             for (var copy = 0; copy < copies; copy++)
@@ -162,6 +165,28 @@ public sealed class ParkingEngine
             }
         }
         return decisions;
+    }
+
+    /// <summary>
+    /// Fires remote probes for every candidate concurrently so ChooseSlot never
+    /// blocks per-slot (previously each slot awaited serially via GetAwaiter().GetResult()).
+    /// </summary>
+    private void SeedRemoteProbes(IReadOnlyList<(ParkingApp App, int Score)> candidates)
+    {
+        if (_remoteProbe is null) return;
+        _probeCache ??= new Dictionary<uint, Task<RemoteBucketSnapshot?>>();
+        var fresh = candidates.Where(c => !_probeCache.ContainsKey(c.App.AppId)).Select(c => c.App.AppId).ToList();
+        foreach (var id in fresh)
+            _probeCache[id] = Task.Run(async () => await _remoteProbe(id).ConfigureAwait(false));
+        Task.WhenAll(fresh.Select(f => _probeCache[f])).GetAwaiter().GetResult();
+    }
+
+    private RemoteBucketSnapshot? GetRemoteProbeResult(uint appId)
+    {
+        if (_remoteProbe is null) return null;
+        return _probeCache is not null && _probeCache.TryGetValue(appId, out var t)
+            ? t.GetAwaiter().GetResult()
+            : null;
     }
 
     /// <summary>
@@ -300,7 +325,7 @@ public sealed class ParkingEngine
             s.StorageAppId == app.AppId &&
             s.StoredName.Equals(storedName, StringComparison.OrdinalIgnoreCase));
 
-        var remote = _remoteProbe is not null ? _remoteProbe(app.AppId).GetAwaiter().GetResult() : null;
+        var remote = GetRemoteProbeResult(app.AppId);
         var remoteCollision = remote?.Files.Any(f =>
             f.FileName.Equals(storedName, StringComparison.OrdinalIgnoreCase)) ?? false;
 

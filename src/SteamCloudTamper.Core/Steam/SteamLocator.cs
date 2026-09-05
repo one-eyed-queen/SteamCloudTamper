@@ -54,12 +54,16 @@ public static class SteamLocator
 
     public static string? DetectInstallPath()
     {
-        var candidates = new[]
+        object?[] candidates = [];
+        if (OperatingSystem.IsWindows())
         {
-            Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null),
-            Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null),
-            Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null),
-        };
+            candidates =
+            [
+                Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null),
+                Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null),
+                Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null),
+            ];
+        }
 
         foreach (var c in candidates)
         {

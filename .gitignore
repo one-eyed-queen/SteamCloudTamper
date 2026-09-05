@@ -10,3 +10,4 @@ tools/steamcloudsave/*.log
 tools/steamcloudsave/*.o
 tools/steamcloudsave/*.a
 dist/
+tui-crash.log
