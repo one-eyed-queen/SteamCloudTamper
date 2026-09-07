@@ -7,7 +7,7 @@ namespace SteamCloudTamper.Cli;
 
 public static class Program
 {
-    // config lives at SCT_CONFIG env var, else the legacy CWD steamcloudtamper.json
+    // config lives at SCT_CONFIG env var, else %APPDATA%/SCT/sct.toml (~/.config on Linux)
     private static readonly string ConfigPath = AppConfig.ResolveDefaultPath();
 
     public static async Task<int> Main(string[] args)
@@ -30,6 +30,7 @@ public static class Program
                 "wipe" => await Wipe(args, config),
                 "wipe-all" => await WipeAll(args, config),
                 "guards" => Guards(args, config),
+                "route" => RouteCmd(args, config),
                 "inject" => InjectLocal(args, config),
                 "lock" => LockBucket(args, config),
                 "relocate" => RelocateBucket(args, config),
@@ -359,6 +360,100 @@ public static class Program
                 break;
             default:
                 Console.WriteLine("usage: guards add|rm|ls <appid>");
+                return 1;
+        }
+
+        return 0;
+    }
+
+    private static int RouteCmd(string[] args, AppConfig config)
+    {
+        var sub = args.Length > 1 ? args[1].ToLowerInvariant() : "ls";
+        var policy = config.Routing;
+        switch (sub)
+        {
+            case "allow" when args.Length > 2 && uint.TryParse(args[2], out var allowId):
+                policy.Blacklist.Remove(allowId);
+                if (policy.Whitelist.Count > 0) policy.Whitelist.Add(allowId);
+                config.Save(ConfigPath);
+                Console.WriteLine($"routing allowed {allowId}");
+                break;
+            case "deny" when args.Length > 2 && uint.TryParse(args[2], out var denyId):
+                policy.Whitelist.Remove(denyId);
+                policy.Blacklist.Add(denyId);
+                policy.Force.Remove(denyId);
+                config.Save(ConfigPath);
+                Console.WriteLine($"routing denied {denyId} (and any force override dropped)");
+                break;
+            case "force" when args.Length > 3 && uint.TryParse(args[2], out var forceId):
+            {
+                var target = args[3].ToLowerInvariant();
+                if (target != "cloud" && target != "local")
+                {
+                    Console.WriteLine("usage: route force <appid> cloud <storageAppid> [lane] | local [folder]");
+                    return 1;
+                }
+                var rule = new RoutingPolicy.RouteRule
+                {
+                    Target = target == "cloud" ? RoutingPolicy.RouteTo.Cloud : RoutingPolicy.RouteTo.Local,
+                    StorageAppId = 0,
+                    LocalFolder = null,
+                    Lane = args.Length > 5 ? args[5] : (target == "local" ? "auto" : null),
+                };
+                if (target == "cloud" && args.Length > 4 && uint.TryParse(args[4], out var storageId))
+                    rule.StorageAppId = storageId;
+                if (target == "local" && args.Length > 4)
+                    rule.LocalFolder = args[4];
+                policy.Force[forceId] = rule;
+                config.Save(ConfigPath);
+                Console.WriteLine($"routing forced {forceId}: {rule.Describe()}");
+                break;
+            }
+            case "default" when args.Length > 2:
+            {
+                var target = args[2].ToLowerInvariant();
+                if (target != "cloud" && target != "local")
+                {
+                    Console.WriteLine("usage: route default cloud <storageAppid> | local [folder]");
+                    return 1;
+                }
+                policy.Default = new RoutingPolicy.RouteRule
+                {
+                    Target = target == "cloud" ? RoutingPolicy.RouteTo.Cloud : RoutingPolicy.RouteTo.Local,
+                    StorageAppId = args.Length > 3 && uint.TryParse(args[3], out var storageId) ? storageId : 0,
+                    LocalFolder = target == "local" && args.Length > 3 ? args[3] : null,
+                    Lane = target == "local" ? "auto" : null,
+                };
+                config.Save(ConfigPath);
+                Console.WriteLine($"routing default: {policy.Default.Describe()}");
+                break;
+            }
+            case "clear" when args.Length > 2 && uint.TryParse(args[2], out var clearId):
+                policy.Force.Remove(clearId);
+                policy.Blacklist.Remove(clearId);
+                config.Save(ConfigPath);
+                Console.WriteLine($"routing cleared {clearId}");
+                break;
+            case "ls":
+                Console.WriteLine($"policy   : {(policy.Whitelist.Count > 0 ? "whitelist-only" : "allow-all")}");
+                Console.WriteLine($"default  : {policy.Default.Describe()}");
+                Console.WriteLine($"rules    : {policy.Force.Count} force override(s), {policy.Blacklist.Count} denied, {policy.Whitelist.Count} whitelisted");
+                if (policy.Whitelist.Count > 0)
+                    Console.WriteLine($"  allow    : {string.Join(" ", policy.Whitelist.OrderBy(x => x))}");
+                if (policy.Blacklist.Count > 0)
+                    Console.WriteLine($"  deny     : {string.Join(" ", policy.Blacklist.OrderBy(x => x))}");
+                foreach (var (appId, rule) in policy.Force.OrderBy(kv => kv.Key))
+                    Console.WriteLine($"  {appId}     : {rule.Describe()}");
+                Console.WriteLine($"file     : {AppConfig.ResolveDefaultPath()}");
+                break;
+            default:
+                Console.WriteLine("""
+                    usage: route allow|deny <appid>
+                           route force <appid> cloud <storageAppid> [lane] | local [folder]
+                           route default cloud <storageAppid> | local [folder]
+                           route clear <appid>
+                           route ls
+                    """);
                 return 1;
         }
 
@@ -1091,6 +1186,41 @@ public static class Program
             return 1;
         }
 
+        // ---- routing policy (routing.* in the config TOML) ----
+        // deny list gives a hard refusal; a forced local rule or a forced lane is
+        // applied HERE so the lane matrix below can honor it.
+        var policy = config.Routing;
+        if (!policy.IsAllowed(gameAppId))
+        {
+            Console.WriteLine($"route refused {gameAppId}: denied by routing policy (whitelist/blacklist). " +
+                              "Fix with: route allow <appid> | route deny <appid> | edit the config TOML, or clear via 'route clear <appid>'.");
+            return 1;
+        }
+        string? policyLane = null;
+        uint? policyBucket = null;
+        if (policy.Force.TryGetValue(gameAppId, out var forceRule))
+        {
+            if (forceRule.Target == RoutingPolicy.RouteTo.Local)
+            {
+                policyLane = "stage";
+                Console.WriteLine($"route force {gameAppId}: local destination -> staging locally (stage lane)");
+            }
+            else if (forceRule.Lane is "client" or "rpc" or "stage")
+            {
+                policyLane = forceRule.Lane;
+            }
+            if (forceRule.StorageAppId != 0)
+            {
+                policyBucket = forceRule.StorageAppId;
+                Console.WriteLine($"route force {gameAppId}: parking into storage {forceRule.StorageAppId}");
+            }
+        }
+        else if (policy.Default.Target == RoutingPolicy.RouteTo.Local)
+        {
+            policyLane = "stage";
+            Console.WriteLine($"route default {gameAppId}: local destination -> staging locally (stage lane)");
+        }
+
         var registry = SctRegistry.Load();
         var files = Directory.EnumerateFiles(bucketDir, "*", SearchOption.AllDirectories)
             .Where(f => !Path.GetFileName(f).Equals("remotecache.vdf", StringComparison.OrdinalIgnoreCase))
@@ -1115,7 +1245,7 @@ public static class Program
             _ => Has(args, "--client") ? "client"
                 : Has(args, "--rpc") ? "rpc"
                 : Has(args, "--offline") || Has(args, "--stage") ? "stage"
-                : "auto",
+                : policyLane ?? "auto",
         };
         if (lane == "auto")
         {
@@ -1165,7 +1295,7 @@ public static class Program
             return 1;
         }
 
-        uint? bucket = Arg(args, "--bucket") is { } bk && uint.TryParse(bk, out var b) ? b : null;
+        uint? bucket = Arg(args, "--bucket") is { } bk && uint.TryParse(bk, out var b) ? b : policyBucket;
         var today = DateOnly.FromDateTime(DateTime.Now);
 
         // container universe from this machine (owned userdata buckets, activation
@@ -1887,6 +2017,11 @@ public static class Program
             wipe <appid> <file> [--blank] [--force]      delete or blank one cloud file
             wipe-all <appid> [--blank] [--force]          wipe entire bucket
             guards add|rm|ls <appid>   maintain never-touch list (persisted)
+            route allow|deny <appid>   save routing policy: allow/deny a game's saves
+            route force <appid> cloud <storageAppid> [lane] | local [folder]
+                                      force a game's saves to a specific destination
+            route default cloud <storageAppid> | local [folder]
+            route clear <appid> | route ls
             inject <uid3> <appid> <file> [remote-name]    userdata drop + remotecache.vdf regen
             lock/unlock <uid3> <appid>   isolate a bucket locally: read-only file blocks Steam re-creation
             relocate/unrelocate <uid3> <appid>  junction-isolate bucket into %LOCALAPPDATA%\SCT\stash
@@ -1940,7 +2075,8 @@ public static class Program
             pool probe --lane rpc         probe writability via a real SCT logon instead of the
                                           running client's tick; pool probe/client sync accept --console
             config:     SCT_CONFIG=<path> overrides the config file location
-                        (default steamcloudtamper.json next to the process)
+                        (default TOML at %APPDATA%/SCT/sct.toml, ~/.config/SCT/sct.toml on
+                        Linux; a legacy steamcloudtamper.json next to the process still loads)
             registry: {SctRegistry.DefaultPath()}
 
             auth: anonymous by default; env SCT_USER/SCT_PASS or SCT_AUTH_MODE=qr for account ops.

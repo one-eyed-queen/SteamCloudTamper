@@ -8,7 +8,7 @@ namespace SteamCloudTamper.Tui;
 
 public static class Program
 {
-    // config lives at SCT_CONFIG env var, else the legacy CWD steamcloudtamper.json (same as the CLI)
+    // config lives at SCT_CONFIG env var, else %APPDATA%/SCT/sct.toml (~/.config on Linux)
     private static readonly string ConfigPath = AppConfig.ResolveDefaultPath();
 
     private static AppConfig _cfg = null!;

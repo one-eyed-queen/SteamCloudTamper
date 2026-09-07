@@ -1,0 +1,41 @@
+# SteamCloudTamper unified config + routing policy.
+# Lives at %APPDATA%\SCT\sct.toml   (Windows)
+#         ~/.config/SCT/sct.toml    (Linux)
+# Override location with the SCT_CONFIG env var.
+#
+# Shortcut: the sibling CLI manages most of this -
+#   route allow|deny <appid>
+#   route force <appid> cloud <storageAppid> [lane] | local [folder]
+#   route default cloud <storageAppid> | local [folder]
+#   route clear <appid>
+#   route ls
+# Editing the file by hand works exactly the same.
+
+[config]
+# Unless you pass --force, dry mode just plans and prints.
+dryRun = true
+# Always re-enumerate + sha-compare after every park upload.
+verifyAfterPark = false
+# Never-touch games (same list the `guards` command maintains).
+# guarded = [ "470", "730" ]
+# Unowned saves ride an owned bucket under sls-<game>/ prefixes.
+# proxies = { "588650" = "480", "0" = "480" }
+# knownOwned = [ "480", "570" ]
+
+# --- routing policy -------------------------------------------------------
+[routing.options]
+# whitelist: when NON-empty, ONLY these games' saves get routed at all.
+whitelist = []
+# blacklist: these games' saves are never routed (kept local/cloud as-is).
+blacklist = []
+
+# Default destination for games without a [routing.force."<appid>"] rule.
+[routing.default]
+target = "cloud"            # "cloud" (park into a storage appid) or "local"
+
+# Per-game forced routing. park obeys: cloud force pins the bucket, local
+# force drops to the stage lane, lane overrides the lane pick when it's auto.
+# [routing.force."440"]
+# target = "cloud"
+# storage = "480"
+# lane = "rpc"

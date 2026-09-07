@@ -102,6 +102,8 @@ trailer that tells you wtf it is. **Anti-ban is the whole point. Don't ruin it.*
 | **Verification** | `--verify` re-enumerates + SHA1-compares on the wire after every park upload. |
 | **Diagnostics** | `doctor` command self-tests install, registry, pool, path safety — optionally live cloud RPC. |
 | **Robustness** | Refresh-token caching, auto-reconnect, bounded retries, path-traversal sanitization. |
+| **Routing policy** | One editable TOML (`%APPDATA%/SCT/sct.toml` / `~/.config/SCT/sct.toml`) with whitelist / blacklist / force rules and per-game local-vs-cloud destinations that `park` actually obeys. |
+| **Linux** | Full .NET linux-x64 build + Steam-path detection (`~/.steam/steam`, `~/.local/share/Steam`, Flatpak); same TOML + registry on XDG dirs. |
 | **Web & ferry** | Read-only web backup lane (`SCT_COOKIE`), plus a best-effort rpc lane into owned 480. |
 
 ---
@@ -122,6 +124,11 @@ dist\SteamCloudTamper.exe          # double-click = TUI, flags = CLI
 No .NET runtime needed — the exe is self-contained. Running from source requires
 the .NET 10 SDK (on this machine it lives at `C:\Users\kaneki\dotnet10` — yes
 it's not on PATH, no we don't know why either).
+
+Config: the whole thing (app knobs + routing policy) is one TOML at
+`%APPDATA%\SCT\sct.toml` (`~/.config/SCT/sct.toml` on Linux, override with
+`SCT_CONFIG`). A legacy `steamcloudtamper.json` next to the process still loads
+and migrates into the TOML on first save.
 
 **Emulated/modded saves (SLS / OST / etc.)**: the drop-in binary lives in
 `tools\steamcloudsave\`. For SLS just run
@@ -161,6 +168,49 @@ safe.
 | `guards add <appid>` | Persistently protect a bucket from accidental wipes |
 | `guards rm <appid>` | Remove protection |
 | `guards ls` | List protected buckets |
+
+### routing policy (the TOML)
+
+All routing lives in one human-editable TOML (the unified config):
+
+- Windows: `%APPDATA%\SCT\sct.toml`
+- Linux: `~/.config/SCT/sct.toml`
+- override: `SCT_CONFIG=<path>`
+
+| Command | Description |
+|---|---|
+| `route ls` | Print the effective policy + the file it lives in |
+| `route allow <appid>` | Allow a game's saves to be routed (removes from blacklist) |
+| `route deny <appid>` | Block a game's saves from routing (drops any force rule) |
+| `route force <appid> cloud <storageAppid> [lane]` | Force a game's saves into a specific storage appid |
+| `route force <appid> local [folder]` | Keep a game's saves local (stage lane) |
+| `route default cloud <storageAppid> \| local [folder]` | Default destination for games without a rule |
+| `route clear <appid>` | Reset a game back to no rule |
+
+```toml
+# sct config v1                       <- %APPDATA%/SCT/sct.toml or ~/.config/SCT/sct.toml
+[config]
+dryRun = true
+verifyAfterPark = false
+guarded = [ "470", "730" ]
+
+[routing.options]                    # whitelist = ONLY these games get routed
+whitelist = []                       # blacklist = never route these
+blacklist = [ "570" ]                # (empty arrays = routing on by default)
+
+[routing.default]                    # where saves go when no per-game rule
+target = "cloud"
+
+[routing.force."440"]                # this game goes HERE no matter what
+target = "cloud"
+storage = "480"
+lane = "rpc"
+```
+
+The `park` command respects the policy: denied games are refused, forced `cloud`
+rules pin the bucket, forced `local` rules drop to the stage lane. A legacy
+`steamcloudtamper.json` next to the process is still read and migrated into the
+TOML on the first run.
 
 ### local isolation
 
@@ -427,11 +477,24 @@ See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for the full matrix and naming 
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\publish.ps1      # -> dist\SteamCloudTamper.exe
-dotnet test tests\SteamCloudTamper.Core.Tests                    # 63 passing, usually
+dotnet test tests\SteamCloudTamper.Core.Tests                    # 70+ passing, usually
 ```
 
+### Linux (SLS-steam + native Steam under Wine/Proton era)
+
+```bash
+./tools/publish.sh                      # -> dist/linux-x64/SteamCloudTamper (single ELF)
+./dist/linux-x64/SteamCloudTamper       # TUI, or pass a command for CLI
+```
+
+- Steam install detection on Linux: `~/.steam/steam`, `~/.local/share/Steam`,
+  Flatpak `.var/app/com.valvesoftware.Steam`, `~/.steam/root`.
+- Config TOML: `~/.config/SCT/sct.toml` (`SCT_HOME` / `SCT_CONFIG` still win).
+- Registry: `~/.local/share/SCT/registry.json` (same JSON, Linux data dir).
+- The `SteamCloudSave.dll` sidecar stays Windows-only for now.
+
 TUI extras: `SCT_TUI_ASCII=1` // `SCT_TUI_NERD=1` // `SCT_TUI_FLAT=1` if you hate gradients.
-Crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log`
+Crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log` (Linux: `~/.local/share/SCT/tui-crash.log`)
 
 ---
 
