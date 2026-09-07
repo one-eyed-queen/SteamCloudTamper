@@ -5,13 +5,13 @@
 #
 #   PowerShell -ExecutionPolicy Bypass -File install.ps1
 #   PowerShell -ExecutionPolicy Bypass -File install.ps1 -GameDir "D:\SteamLibrary\steamapps\common\MyGame"
-#   PowerShell -ExecutionPolicy Bypass -File install.ps1 -Mode load_dlls|shim|ost|auto -AppId 91330
+#   PowerShell -ExecutionPolicy Bypass -File install.ps1 -Mode load_dlls|sls|shim|ost|auto -AppId 91330
 #
 # The DLL autodetects steamPath + appid + shadowRoot at runtime, so in most cases
 # this script only needs to place the DLL where the loader looks for it.
 
 param(
-    [ValidateSet('auto','load_dlls','shim','ost')]
+    [ValidateSet('auto','load_dlls','sls','shim','ost')]
     [string]$Mode = 'auto',
 
     [string]$GameDir = '',
@@ -174,6 +174,7 @@ Write-Config
 switch ($Mode) {
     'shim'      { Mount-Shim }
     'load_dlls' { Mount-LoadDlls }
+    'sls'       { Mount-LoadDlls }   # SLSsteam uses the same steam_settings\load_dlls mount
     'ost'       { Mount-Ost }
 }
 
@@ -182,3 +183,4 @@ Write-Host "Done. The DLL autodetects steam path, appid and shadow root at runti
 Write-Host "you only need to configure anything if you want a custom shadow root or auto-park."
 Write-Host "Default shadow root: %LOCALAPPDATA%\SCT\shadow\<appid>"
 Write-Host "Real cloud parking (upload to UFS) is done by the SCT CLI:  SCT park <appid> --lane rpc"
+Write-Host "SLS users: launch through the emulator and the DLL is auto-loaded from steam_settings\load_dlls."

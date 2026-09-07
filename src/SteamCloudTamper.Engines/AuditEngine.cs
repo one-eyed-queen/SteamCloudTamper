@@ -41,7 +41,7 @@ public sealed class AuditEngine(AppConfig config)
         var era = EraDetector.Classify(state.AppId, owned, config.Hints);
         var note = era switch
         {
-            Era.SteamTools760 => "SteamTools-era: cloud writes were rerouted to AppID 760",
+            Era.AnonymousDump760 => "760-era: anonymous public dump, cloud writes were rerouted here",
             Era.Owned => "owned on this account",
             Era.GreenLumaRealAppId => "not owned - possible GreenLuma/SLS-era cloud upload",
             Era.Emulated => "emulator-era (client not involved)",

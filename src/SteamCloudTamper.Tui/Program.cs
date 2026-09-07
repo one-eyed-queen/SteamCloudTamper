@@ -212,7 +212,7 @@ public static class Program
 
     private static string EraStyle(Era e) => e switch
     {
-        Era.SteamTools760 => "[red3]ST-760[/]",
+        Era.AnonymousDump760 => "[red3]760-dump[/]",
         Era.GreenLumaRealAppId => "[orange1]GL-real[/]",
         Era.Owned => "[green]owned[/]",
         Era.Emulated => "[purple]emu[/]",

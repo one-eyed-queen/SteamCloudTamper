@@ -66,7 +66,7 @@ she knew. "iterate backwards fyi" - yes ma'am, we do it backwards now, promise.
 ## why it exists
 
 Before ~April 2025 you could upload a save file into any appid bucket. People
-(steamtools, u know who u are) dumped EVERYTHING into 760 — the screenshots app —
+(aka the 760-era public dumpers, u know who u are) dumped EVERYTHING into 760 — the screenshots app —
 so saves from 20 different games collided into one folder. Valve noticed. Valve
 patched it. Now even *enumerating* an unowned bucket gives you `AccessDenied`
 (tested, logged in, still denied — thanks Valve).
@@ -122,6 +122,13 @@ dist\SteamCloudTamper.exe          # double-click = TUI, flags = CLI
 No .NET runtime needed — the exe is self-contained. Running from source requires
 the .NET 10 SDK (on this machine it lives at `C:\Users\kaneki\dotnet10` — yes
 it's not on PATH, no we don't know why either).
+
+**Emulated/modded saves (SLS / OST / etc.)**: the drop-in binary lives in
+`tools\steamcloudsave\`. For SLS just run
+`tools\steamcloudsave\install.ps1 -Mode sls -GameDir <game folder>` and launch via
+SLS — the DLL shadows the game's cloud to `%LOCALAPPDATA%\SCT\shadow\<appid>`
+with no other config. Then `park` that save into real UFS whenever you want it
+safe.
 
 ---
 
@@ -377,27 +384,28 @@ Some things are just permanent. Like that one save from 2013. It hears you. It r
 | **SCT CLI/TUI** | native | full (pool, park, ferry, barcode, registry, wipe, web, proxy, doctor) |
 | **SCT client lane** | running Steam session (no login): stage locally + CloudLogWatcher verdict | full |
 | **SCT posture tracker** | per-slot `real` / `provider` / `redirected` / `local` in registry.json | full |
-| **SCT container discovery** | `pool discover [--net]`: PoolDb + userdata + OST lua + CR host + SLS + GreenLuma | full |
-| **gbe_fork / SLS fork** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`; the DLL auto-detects steam/appid/shadow) | shipped (tools/steamcloudsave) |
-| **OpenSteamTool** | `[cloud]` + CloudRedirect host, `[inject]` for SteamCloudSave.dll, Lua pool snippet | shipped (integrations/opensteamtool) |
-| **universal mount** | `tools\steamcloudsave\install.ps1` auto-detects your loader (SHIM / `load_dlls` / OST `[inject]`) and mounts the DLL for you | shipped (tools/steamcloudsave/install.ps1) |
+| **SCT container discovery** | `pool discover [--net]`: PoolDb + userdata + OST lua + CR host + SLS/Goldberg + GreenLuma | full |
+| **SLSsteam / SLS fork / gbe_fork** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`; the DLL auto-detects steam/appid/shadow). `install.ps1 -Mode sls` mounts it for you. | shipped (tools/steamcloudsave) |
+| **OpenSteamTool / BetterSteamTools** | `[cloud]` + CloudRedirect host, `[inject]` for SteamCloudSave.dll, Lua pool snippet | shipped (integrations/opensteamtool) |
+| **universal mount** | `tools\steamcloudsave\install.ps1` auto-detects your loader (SHIM / `load_dlls` / SLS / OST `[inject]`) and mounts the DLL for you | shipped (tools/steamcloudsave/install.ps1) |
 | **CloudRedirect** | provider engine: local-folder provider answers Cloud.* RPCs locally, GUI shows "synced" — no UFS uploads | shipped (v2.6.4) |
 | **SCT appid proxy lane** | rpc lane with `sls-<game>/` namespacing into owned bucket | full |
 | **Ace SLS appId proxy** | in-process `CClientUnifiedServiceTransport` hook — the client-side version SCT ports in | research + lessons in APPID-PROXY.md |
 
 See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for the full matrix and naming contract.
 
-> **Honest note about "drop the DLL in any mod"**: only the `load_dlls`-family loaders
-> (gbe_fork / SLS fork / Goldberg), OST `[inject]`, and the SHIM rename can load a native
-> DLL into a game process. JS-plugin frameworks (BetterSteamTools, SteamTools, Millennium)
-> are Steam CEF UI plugins and have **no native DLL slot** — for those, SCT integrates at
-> the data layer (`registry.json` / `shadow-status.json`). See `tools/steamcloudsave/README.md`.
+> **Honest note about "drop the DLL in any mod"**: native-DLL loaders — `load_dlls`-family
+> (gbe_fork / SLS fork / SLSsteam / Goldberg), OST/BetterSteamTools `[inject]`, and the SHIM
+> rename — load SteamCloudSave.dll right into the game process. Entitlement-only tools
+> (GreenLuma) and CEF JS UI plugins (e.g. Millennium) have no game-process DLL slot, so for
+> those SCT integrates at the data layer (`registry.json` / `shadow-status.json`).
+> See `tools/steamcloudsave/README.md`.
 
 ---
 
 ## research notes
 
-- **760 pollution**: SteamTools rewrote cloud requests for unowned games into appid 760 without per-game prefixes, so saves collided across games. STFixer, CloudRedirect, and this repo all started with the same bruised knuckles.
+- **760 pollution**: the 760-era public dump rewrote cloud requests for unowned games into appid 760 without per-game prefixes, so saves collided across games. STFixer, CloudRedirect, and this repo all started with the same bruised knuckles.
 - **Valve patch April 2025**: cloud UFS for unowned appids -> `AccessDenied` on enumerate/upload/delete. Confirmed even logged in.
 - **Retail SteamCloudFileManager**: even they get physically rejected for special internal appids (760/7) server side, so they resort to CDP-hijacked web sessions. Our web lane is read-only by design — same wall, less credit card drama.
 - **Old conflict-dialog trick** (zero files, delete remotecache, "upload nothing"): predates the 2025 patch and only really works for owned games now.
@@ -445,4 +453,4 @@ Crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log`
 
 ## anti-flooding rule (all lanes)
 
-SCT never mass-uploads, never uses public/anonymous dumps (the SteamTools-760 pattern is what got cloud UFS locked down). Every write is ONE small private file in a REAL app's cloud bucket — chosen by PoolDb, verified per-account by `pool probe`, and spread/mirrored via `--spread`/`--copies` so no single slot ever carries a detectable pattern.
+SCT never mass-uploads, never uses public/anonymous dumps (the 760-era anonymous-dump pattern is what got cloud UFS locked down). Every write is ONE small private file in a REAL app's cloud bucket — chosen by PoolDb, verified per-account by `pool probe`, and spread/mirrored via `--spread`/`--copies` so no single slot ever carries a detectable pattern.

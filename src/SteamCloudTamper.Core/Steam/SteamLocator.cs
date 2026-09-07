@@ -173,7 +173,7 @@ public static class SteamLocator
 
     /// <summary>
     /// True when OpenSteamTool has hooked this AppID via a config/lua/*.lua
-    /// "addappid" bundle (OST/SteamTools-style). Those buckets never touch Valve -
+    /// "addappid" bundle. Those buckets never touch Valve -
     /// they are CloudRedirect-local or plain registry entries.
     /// </summary>
     public static bool IsOstRedirected(string steamPath, uint appId)

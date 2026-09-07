@@ -1878,7 +1878,7 @@ public static class Program
     private static int Help()
     {
         Console.WriteLine("""
-            SteamCloudTamper - Steam cloud save manager (official + SteamTools/GreenLuma/SLS-era buckets)
+            SteamCloudTamper - Steam cloud save manager (official + GreenLuma/SLS-era buckets)
 
             detect                    locate Steam + accounts + libraries
             scan                      audit local userdata buckets (per account/app)

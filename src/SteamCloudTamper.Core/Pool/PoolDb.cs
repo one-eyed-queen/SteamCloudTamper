@@ -37,7 +37,7 @@ public sealed record ParkingApp(
 /// Every candidate must be an AppID the account is entitled to regardless of library
 /// (hidden/dev apps, free games, Valve tools). 7/760 are enforced-blocked by Valve's
 /// patch (Apr 2025). Policy: PRIVATE single-file cloud saves of real apps only -
-/// no public/anonymous flooding (the SteamTools 760 era is dead on purpose).
+/// no public/anonymous flooding (the 760-era dump site is dead on purpose).
 /// CloudEnabled is not published via the store API - candidates get verified
 /// by a private local probe (one tiny barcode-tagged file, client syncs, verdict
 /// read from cloud_log.txt) before the registry marks them VerifiedWritable.
@@ -65,7 +65,7 @@ public static class PoolDb
             "Steam's own config bucket - universally entitled, hidden, uncommon. cloud_log shows native syncs "
             + "(Successfully synced to ChangeNumber) - probe decides upload capability."),
         new(760, "Screenshots", 2008, true, SlotTier.HiddenDev, SlotState.Blocked, "Internal",
-            "INTERNAL - the SteamTools 760 dump site. Server refuses UFS ops. NOT FLOODED - this is the official stance."),
+            "INTERNAL - the 760-era public dump site. Server refuses UFS ops. NOT FLOODED - this is the official stance."),
 
         // ---- Tier 2: old, free, widely-entitled games -------------------------
         new(230410, "Warframe", 2013, true, SlotTier.OldFree, SlotState.Candidate, "FreeGame",

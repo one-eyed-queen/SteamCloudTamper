@@ -44,7 +44,7 @@ public static class EraDetector
 
     public static Era Classify(uint appId, IReadOnlySet<uint>? owned = null, IReadOnlyDictionary<string, string>? hints = null)
     {
-        if (appId == ScreenshotsApp) return Era.SteamTools760;
+        if (appId == ScreenshotsApp) return Era.AnonymousDump760;
         if (owned is not null && owned.Contains(appId)) return Era.Owned;
         if (hints is not null && hints.TryGetValue(appId.ToString(), out var h)) return h.ToLowerInvariant() switch
         {

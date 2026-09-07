@@ -14,7 +14,7 @@ Load it and it figures out the rest on its own:
 | `steamPath` | Windows registry (`HKCU`/`HKLM` Valve\Steam), like `SteamLocator.cs` |
 | `appid` | `<game folder>\steam_appid.txt` |
 | `shadowRoot` | `%LOCALAPPDATA%\SCT\shadow\<appid>` |
-| loader context | where the DLL lives (`load_dlls\` = gbe/SLS, `steam_api64.dll` = shim) |
+| loader context | where the DLL lives (`load_dlls\` = SLSsteam / SLS fork / gbe_fork, `steam_api64.dll` = shim) |
 
 Config still overrides everything: `steamcloudsave.cfg` next to the DLL, or
 `%LOCALAPPDATA%\SCT\steamcloudsave.cfg`, or `SCT_SCS_CONFIG`/`SCT_HOOK_CONFIG`
@@ -25,9 +25,31 @@ enviroment variables (see `steamcloudsave.cfg.EXAMPLE`).
 | Mounting style | How | Result |
 |---|---|---|
 | SHIM | rename `SteamCloudSave.dll` -> `steam_api64.dll` in the game (back up the real one) | classic shadow redirect, single game |
-| gbe_fork / SLS fork | copy `SteamCloudSave.dll` into `<game>/steam_settings/load_dlls/` | auto-loaded via `LoadLibraryW` |
-| OpenSteamTool | `[inject]` in `opensteamtool.toml` (`library_x64`/`library_x86`) | mounted by OST into the game |
+| **SLSsteam / SLS fork / gbe_fork** | copy `SteamCloudSave.dll` into `<game>/steam_settings/load_dlls/` | auto-loaded via `LoadLibraryW` |
+| OpenSteamTool / BetterSteamTools | `[inject]` in `opensteamtool.toml` (`library_x64`/`library_x86`) | mounted into the game |
 | **install.ps1** | `.\install.ps1` auto-detects which of the above you run and mounts for you | one command, any loader |
+
+### SLSsteam — first-class ("I just want it to work with SLS")
+
+SLS (and its gbe/SLS-fork emulators) auto-load every DLL in the game's
+`steam_settings\load_dlls\` folder via `LoadLibraryW`. There is nothing else to
+configure — the DLL reads the Steam path from the registry and the appid from
+`steam_settings\appid.txt` / `steam_appid.txt`.
+
+```
+# before first run, one command:
+PowerShell -ExecutionPolicy Bypass -File install.ps1 -Mode sls -GameDir "D:\...\steamapps\common\MyGame"
+```
+
+This copies `SteamCloudSave.dll` into `steam_settings\load_dlls\` and writes
+`steam_settings\appid.txt` if it's missing. Launch the game through SLS and the
+game's RemoteStorage I/O shadows to `%LOCALAPPDATA%\SCT\shadow\<appid>\`.
+
+> Emulator note: when SLS is the emulator, the game is likely running against the
+> emulator's own `steam_api64.dll`, so the SHIM style is unnecessary — `load_dlls`
+> is the SLS way. The emulator handles entitlement; SCT only owns the cloud shadow +
+> (via the CLI's `park`) real UFS parking for saves you want out of the emulator's
+> reach entirely.
 
 ## Status + background parking (optional)
 
@@ -48,18 +70,16 @@ Only some mod tools can load native DLLs into game processes:
 
 | Tool | Mounts SteamCloudSave.dll? | How | Notes |
 |---|---|---|---|
-| gbe_fork / SLS fork / Goldberg (cracked steam_api64) | ✅ | `steam_settings\load_dlls\` | the primary citizen for cracked/emulated games |
-| OpenSteamTool | ✅ | `[inject]` → `library_x64`/`library_x86` | also hosts CloudRedirect for GUI-sync |
+| **SLSsteam / SLS fork / gbe_fork / Goldberg** | ✅ | `steam_settings\load_dlls\` | first-class; primary citizen for emulated/cracked games |
+| **OpenSteamTool / BetterSteamTools** | ✅ | `[inject]` → `library_x64`/`library_x86` | same project (BST = OST); also hosts CloudRedirect for GUI-sync |
 | GreenLuma | ⚠️ entitlement only | reads `appidwhitelist.txt` | unlocks apps; no game-process DLL slot — SCT reads it via `pool discover` |
-| SteamTools (TeaAPI) | ⚠️ entitlement/C# API only | not a game-process DLL loader | SCT integrates at the data layer |
-| BetterSteamTools (BST) | ❌ | Dota 2 JS plugin, CEF UI only | cannot mount native DLLs into games; SCT plugs in at `registry.json`/`shadow-status.json` |
-| Millennium (SteamClientHomebrew) | ❌ | Steam CEF JS/CSS plugin | no native slot; SCT plugs in at the data layer |
+| Millennium (SteamClientHomebrew) | ❌ | Steam CEF JS/CSS plugin | no native game-process slot; SCT plugs in at `registry.json`/`shadow-status.json` |
 
 So "one DLL, drop it into any mod" is literally true for the `load_dlls`-family
-loaders, OST `[inject]`, and the SHIM rename. The JS-plugin frameworks
-(BetterSteamTools, SteamTools, Millennium) can't load it into a game process —
-for those, SCT's real interface is the data files it writes
-(`registry.json` / `shadow-status.json`).
+loaders (SLSsteam, SLS fork, gbe_fork, Goldberg), OST/BetterSteamTools `[inject]`,
+and the SHIM rename. Entitlement-only tools (GreenLuma) and CEF JS UI plugins
+(Millennium) can't load native DLLs into a game — for those, SCT's real interface
+is the data files it writes (`registry.json` / `shadow-status.json`).
 
 ## Exports for other tools
 

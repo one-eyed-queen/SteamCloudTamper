@@ -16,7 +16,7 @@ VerifiedWritable real > AutoClouded real > probe-candidate > provider/redirected
 authoritative filter, `--bucket` enforces the same consent/filter checks, re-parking
 keeps a proven owned slot only with consent. 45/45 tests.
 
-Not yet built (next): SLS/SteamTools shipping integrations, `pool discover` scoped by posture.
+Not yet built (next): SLS shipping integrations, `pool discover` scoped by posture.
 
 ## 1. Entitlement-driven container discovery (the core feature)
 
@@ -78,5 +78,5 @@ read (new), Millennium doc. `pool discover` shows each container's source host.
 - ApiProbe: DELETE
 - Source layout: keep 4 projects
 - Container policy: store unowned saves into owned/free/hidden/tool containers;
-  SCT works as plugin/addon for Steam/OST/ST/LT/SLS/GL or independent
+  SCT works as plugin/addon for Steam/OST/SLS/GL or independent
 - Publish target: local `dist/` only (gitignored); GitHub stays source-only

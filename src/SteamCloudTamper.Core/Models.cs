@@ -4,7 +4,7 @@ public enum Era
 {
     Unknown,
     Owned,
-    SteamTools760,
+    AnonymousDump760,
     GreenLumaRealAppId,
     Emulated,
     OnlineFix,

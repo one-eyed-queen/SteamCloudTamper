@@ -69,7 +69,7 @@ public class PoolDbTests
     [Fact]
     public void BlockedAppsAreNeverUsable()
     {
-        Assert.False(PoolDb.Find(760)!.IsUsable); // SteamTools flood site stays dead
+        Assert.False(PoolDb.Find(760)!.IsUsable); // 760 public dump site stays dead
         Assert.True(PoolDb.Find(7)!.IsUsable);    // Steam client bucket re-candidate (native syncs observed)
         Assert.True(PoolDb.Find(480)!.IsUsable);
     }
