@@ -385,7 +385,7 @@ Some things are just permanent. Like that one save from 2013. It hears you. It r
 | **SCT client lane** | running Steam session (no login): stage locally + CloudLogWatcher verdict | full |
 | **SCT posture tracker** | per-slot `real` / `provider` / `redirected` / `local` in registry.json | full |
 | **SCT container discovery** | `pool discover [--net]`: PoolDb + userdata + OST lua + CR host + SLS/Goldberg + GreenLuma | full |
-| **SLSsteam / SLS fork / gbe_fork** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`; the DLL auto-detects steam/appid/shadow). `install.ps1 -Mode sls` mounts it for you. | shipped (tools/steamcloudsave) |
+| **gbe_fork / SLS fork / SLSsteam** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`; the DLL auto-detects steam/appid/shadow, and forwards to gbe's already-loaded steam_api/steamclient so it never double-loads a Valve steam_api). `install.ps1 -Mode sls` mounts it for you. | shipped (tools/steamcloudsave) |
 | **OpenSteamTool / BetterSteamTools** | `[cloud]` + CloudRedirect host, `[inject]` for SteamCloudSave.dll, Lua pool snippet | shipped (integrations/opensteamtool) |
 | **universal mount** | `tools\steamcloudsave\install.ps1` auto-detects your loader (SHIM / `load_dlls` / SLS / OST `[inject]`) and mounts the DLL for you | shipped (tools/steamcloudsave/install.ps1) |
 | **CloudRedirect** | provider engine: local-folder provider answers Cloud.* RPCs locally, GUI shows "synced" — no UFS uploads | shipped (v2.6.4) |

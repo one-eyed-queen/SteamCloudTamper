@@ -27,3 +27,13 @@ appid=91330
 # Only autoPark once a shadow write is at least this many bytes. 0 = always.
 # A small number avoids parking on trivial 1-byte "last write" stubs.
 minShadowBytes=0
+
+# How passthrough forwards non-shadowed calls to steams API surface:
+#   auto   (default) - if steam_api64/steamclient64 is already loaded in the process
+#                       (gbe_fork/SLS sidecar, emulator), forward to IT; else load
+#                       the real steam_api64.dll from steamPath
+#   inproc           - ONLY forward to an already-loaded module, never load from disk
+#   path             - always load the real steam_api64.dll from steamPath
+# For gbe_fork / SLS load_dlls: leave as auto (it will pick up gbe's loaded api and
+# avoid a second conflicting copy). For a bare SHIM over real Steam: auto is also fine.
+# resolveMode=auto

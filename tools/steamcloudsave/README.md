@@ -29,6 +29,23 @@ enviroment variables (see `steamcloudsave.cfg.EXAMPLE`).
 | OpenSteamTool / BetterSteamTools | `[inject]` in `opensteamtool.toml` (`library_x64`/`library_x86`) | mounted into the game |
 | **install.ps1** | `.\install.ps1` auto-detects which of the above you run and mounts for you | one command, any loader |
 
+### gbe_fork — sidecar passthrough (no double steam_api copy)
+
+gbe_fork injects its own `steam_api64.dll` / `steam_api.dll` (and links `steamclient64.dll`)
+into the game. SteamCloudSave.dll must NOT then load a second Valve `steam_api64.dll`,
+or you'd get two conflicting API surfaces in one process. So in `load_dlls` mode the
+DLL **resolves passthrough to the module already loaded in the process**
+(`steam_api64.dll`, falling back to `steamclient64.dll`) instead of loading from
+`steamPath`.
+
+- Shadow mode (appid + shadowRoot): RemoteStorage calls are handled locally — the
+  game never touches gbe's Steam *or* Valve's cloud.
+- Non-shadowed calls: forwarded to whichever steam API gbe already has loaded.
+
+This is automatic (`resolveMode=auto`). If you ever need to force a specific
+behavior, set `resolveMode=path|inproc` in the config — `path` always loads the
+real Valve DLL from `steamPath`, `inproc` never loads from disk.
+
 ### SLSsteam — first-class ("I just want it to work with SLS")
 
 SLS (and its gbe/SLS-fork emulators) auto-load every DLL in the game's
@@ -70,7 +87,7 @@ Only some mod tools can load native DLLs into game processes:
 
 | Tool | Mounts SteamCloudSave.dll? | How | Notes |
 |---|---|---|---|
-| **SLSsteam / SLS fork / gbe_fork / Goldberg** | ✅ | `steam_settings\load_dlls\` | first-class; primary citizen for emulated/cracked games |
+| **SLSsteam / SLS fork / gbe_fork / Goldberg** | ✅ | `steam_settings\load_dlls\` | first-class; forwards to the already-loaded gbe steam_api/steamclient (no double copy); primary citizen for emulated/cracked games |
 | **OpenSteamTool / BetterSteamTools** | ✅ | `[inject]` → `library_x64`/`library_x86` | same project (BST = OST); also hosts CloudRedirect for GUI-sync |
 | GreenLuma | ⚠️ entitlement only | reads `appidwhitelist.txt` | unlocks apps; no game-process DLL slot — SCT reads it via `pool discover` |
 | Millennium (SteamClientHomebrew) | ❌ | Steam CEF JS/CSS plugin | no native game-process slot; SCT plugs in at `registry.json`/`shadow-status.json` |

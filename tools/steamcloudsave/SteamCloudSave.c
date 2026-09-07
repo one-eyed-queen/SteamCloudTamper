@@ -49,6 +49,7 @@ static char        g_registryPath[MAX_PATH] = {0};
 static char        g_autoPark[MAX_PATH] = {0};
 static uint32_t    g_targetAppId = 0;
 static uint32_t    g_minShadowBytes = 0;
+static int         g_resolveMode = 0; // 0=auto 1=path 2=inproc
 static HMODULE     g_real = NULL;
 static int         g_inited = 0;
 static int         g_loaderKind = 0; // 0=unknown 1=shim 2=load_dlls(gbe/sls) 3=ost-inject 4=greenluma
@@ -178,11 +179,17 @@ static void loadConfigFrom(const char* cfgPath)
         else if (!_stricmp(key, "registryPath")) strncpy(g_registryPath, val, sizeof(g_registryPath) - 1);
         else if (!_stricmp(key, "autoPark"))     strncpy(g_autoPark, val, sizeof(g_autoPark) - 1);
         else if (!_stricmp(key, "minShadowBytes")) g_minShadowBytes = (uint32_t)strtoul(val, NULL, 10);
+        else if (!_stricmp(key, "resolveMode"))
+        {
+            if (!_stricmp(val, "path")) g_resolveMode = 1;
+            else if (!_stricmp(val, "inproc")) g_resolveMode = 2;
+            else g_resolveMode = 0;
+        }
     }
     fclose(f);
-    sctLog("sct: config %s steam=%s appid=%u shadow=%s registry=%s autopark=%s",
+    sctLog("sct: config %s steam=%s appid=%u shadow=%s registry=%s autopark=%s resolve=%d",
            cfgPath, g_steamPath, g_targetAppId, g_shadowRoot, g_registryPath,
-           g_autoPark[0] ? g_autoPark : "(off)");
+           g_autoPark[0] ? g_autoPark : "(off)", g_resolveMode);
 }
 
 static void loadConfig(void)
@@ -224,8 +231,8 @@ static void loadConfig(void)
     if (!g_shadowRoot[0] && g_targetAppId != 0)
         setDefaultShadowRoot(g_shadowRoot, sizeof(g_shadowRoot));
 
-    sctLog("sct: effective steam=%s appid=%u shadow=%s loader=%d",
-           g_steamPath, g_targetAppId, g_shadowRoot[0] ? g_shadowRoot : "(none)", g_loaderKind);
+    sctLog("sct: effective steam=%s appid=%u shadow=%s loader=%d resolve=%d",
+           g_steamPath, g_targetAppId, g_shadowRoot[0] ? g_shadowRoot : "(none)", g_loaderKind, g_resolveMode);
 }
 
 static void mkdirs(const char* path)
@@ -248,6 +255,32 @@ static void shadowPathFor(const char* file, char* out, size_t outLen)
 static HMODULE realModule(void)
 {
     if (g_real) return g_real;
+
+    // In gbe_fork / SLS sidecar mode (load_dlls), the emulator's steam_api64.dll
+    // (and usually steamclient64.dll) is ALREADY loaded in this process, and the
+    // game talks to it. Loading the real Valve DLL from steamPath would create a
+    // second, conflicting API surface. So resolve passthrough to the already-loaded
+    // module first (cheap, correct), only falling back to steamPath for the shim/case
+    // where the game is running against the real Steam client.
+    if (g_resolveMode != 1) // 1 = forced 'path'; 0=auto, 2=inproc => prefer in-proc
+    {
+        HMODULE inProc = GetModuleHandleA("steam_api64.dll");
+        if (!inProc) inProc = GetModuleHandleA("steamclient64.dll");
+        if (inProc)
+        {
+            g_real = inProc;
+            sctLog("sct: passthrough -> already-loaded %s",
+                   GetModuleHandleA("steam_api64.dll") ? "steam_api64.dll" : "steamclient64.dll");
+            return g_real;
+        }
+    }
+
+    if (g_resolveMode == 2) // 'inproc' forced: do NOT load from steamPath
+    {
+        sctLog("sct: no in-process steam api; resolveMode=inproc, not loading from steamPath");
+        return NULL;
+    }
+
     if (!g_steamPath[0]) { sctLog("sct: no steamPath - not forwarding"); return NULL; }
     char dllPath[MAX_PATH * 2];
     snprintf(dllPath, sizeof(dllPath), "%s\\steam_api64.dll", g_steamPath);
