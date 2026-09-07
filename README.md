@@ -1,13 +1,18 @@
 # <img src="assets/ansi_art.png" alt="SteamCloudTamper" width="460" />
 
-Runs your steam cloud saves though a car wash. Not sure it improved anything, but they
-sure are clean now. And parked. Parked saves! Because Valve told us "you cant upload to
-games you dont own anymore" (around april 2025) and we went "fine, we'll keep em in
-buckets you technically cant argue with".
+Steam Cloud saves for games you don't own -- routed through buckets you do. Anti-flood, anti-ban, barcode-tracked parking for the post-April-2025 era.
 
-pronounced **SCT** like you'd say "sick" if you stubbed your toe.
+Pronounced **SCT** like you'd say "sick" if you stubbed your toe.
 
-## 🌸 special thanks: ace (∞/∞, would proxy again) 🌸
+> Valve decided to refuse cloud uploads for games your account does not own (server
+> side, ~April 2025, no warning). SCT finds those buckets, probes what Valve still
+> lets you do with them, wipes the ones it can, and **parks** saves you care about
+> into appid containers you DO own -- hidden dev apps, tools, free games, your own
+> library. Parked files carry a barcode trailer so they never become anonymous junk.
+
+---
+
+## special thanks: Ace (∞/∞, would proxy again)
 
 ```
          +-------------------------------------------+
@@ -21,294 +26,335 @@ pronounced **SCT** like you'd say "sick" if you stubbed your toe.
               /( ^ x ^ )\  thank you!!  /( ^ x ^ )\
 ```
 
-(◕‿◕) the appid proxy trick - the one that lets unowned games ride an owned bucket
-under cute little `sls-<game>/` prefixes - was **her** idea first. she wrote the
-original patch ([docs/APPID-PROXY.md](docs/APPID-PROXY.md) is basically a love letter to it),
-and then sat through a bazillion questions while we ported it into SCT without the
-hook. changelist filtering? she knew. the cloud-cleaner forward-iteration bug? she
-knew. "iterate backwards fyi" - yes ma'am, we do it backwards now, promise. (つ≧▽≦)つ
+(◕‿◕) the appid proxy trick -- unowned games riding an owned bucket under cute
+little `sls-<game>/` prefixes -- was **her** idea first. she wrote the original
+patch ([docs/APPID-PROXY.md](docs/APPID-PROXY.md) is basically a love letter to
+it), and then sat through a bazillion questions while we ported it into SCT without
+the hook. changelist filtering? she knew. the cloud-cleaner forward-iteration bug?
+she knew. "iterate backwards fyi" - yes ma'am, we do it backwards now, promise.
+(つ≧▽≦)つ
 
 <img src="assets/blush-watermark.svg" width="680" alt="she helped a lot. we would rate her dev skills infinity/infinity. if this readme could blush it would 🥰 ⋆｡°✩ 🎀" />
 
-- [github.com/AceSLS](https://github.com/AceSLS) — go say hi, tell her SCT says thanks.
+- [github.com/AceSLS](https://github.com/AceSLS) -- go say hi, tell her SCT says thanks.
 
-## the short version
+---
 
-- Steam descided to refuse cloud uploads for games your account does not own. server
-  side. no warning, no "are you sure".
-- steamtools did the 760 thing and now everyones userdata has mystery files in the
-  screenshots bucket. we also did NOT do that, stop asking.
-- this tool finds those buckets, probes what valve still lets you do with them, wipes
-  the ones it can, and **parks** saves you care about into appid containers you DO own
-  (hidden dev apps, tools, free games, your own library buckets - see "smart appid
-  containers" below).
-- parked files carry a barcode trailer so they never become anonymous junk. this is the
-  "barcode lane". do not ask why its called a barcode, we though it looked cool.
+## table of contents
 
-## why it exists (the rant)
+- [why it exists](#why-it-exists)
+- [quick start](#quick-start)
+- [commands](#commands)
+- [how it works](#how-it-works)
+  - [the barcode lane](#the-barcode-lane)
+  - [parking allocator rules](#parking-allocator-rules)
+  - [riding the running steam session](#riding-the-running-steam-session)
+  - [smart appid containers](#smart-appid-containers)
+- [integrations](#integrations)
+  - [synced in the steam gui (OST + CloudRedirect)](#synced-in-the-steam-gui-ost--cloudredirect)
+  - [appid proxy lane](#appid-proxy-lane)
+- [local isolation techniques](#local-isolation-techniques)
+- [wipe reality check](#wipe-reality-check)
+- [research notes](#research-notes)
+- [known broken / wontfix](#known-broken--wontfix)
+- [build from source](#build-from-source)
 
-Before ~april 2025 you could upload a save file into any appid bucket. People
-(steamtools, u know who u are) dumped EVERYTHING into 760 - the screenshots app - so
-saves from 20 different games collided into one folder. valve noticed. valve patched
-it. now even *enumerating* an unowned bucket gives you `AccessDenied` (we tested,
-logged in, still denied - thanks valve).
+---
 
-so the old "just upload it into 760 nobody will notice lmao" era is over. what still
+## why it exists
+
+Before ~April 2025 you could upload a save file into any appid bucket. People
+(steamtools, u know who u are) dumped EVERYTHING into 760 -- the screenshots app --
+so saves from 20 different games collided into one folder. Valve noticed. Valve
+patched it. Now even *enumerating* an unowned bucket gives you `AccessDenied`
+(tested, logged in, still denied -- thanks Valve).
+
+So the old "just upload it into 760 nobody will notice lmao" era is over. What still
 works, because steel engine is dumb:
 
-- you own spacewar (480). everyone owns spacewar. its a hidden test game. buckets for
-  hidden/apps/tools are totally normal.
-- steam client config bucket (7) actually syncs to real UFS on this machine - we
-  litterally watched `Successfully synced to ChangeNumber'65'` happen in cloud_log.
-- free games, mod hosts, steamvr stuff - all entitled to every account.
+| What | Why |
+|---|---|
+| Spacewar (480) | Everyone owns it. Hidden test game. Buckets for hidden/apps/tools are normal. |
+| Steam Client config (7) | Syncs to real UFS on this machine. We watched `Successfully synced to ChangeNumber'65'` happen in cloud_log. |
+| Free games, mod hosts, SteamVR | Entitled to every account. |
 
-so instead of **flooding**, which is what got the whole thing locked down, SCT does the
-opposite: one small private file, one real app bucket, spread & mirrored, with a
-trailer that tells you wtf it is. anti-ban is the whole point. dont ruin it.
+So instead of **flooding** (which is what got the whole thing locked down), SCT does
+the opposite: one small private file, one real app bucket, spread & mirrored, with a
+trailer that tells you wtf it is. Anti-ban is the whole point. Don't ruin it.
 
-## project layout
+---
 
-- `src/SteamCloudTamper.Core` - models, vdf parser/writer + remotecache generator, root-path map, steam
-  install/account discovery, config, and the parking brain (PoolDb + registry + allocator + discoverer)
-- `src/SteamCloudTamper.Engines` - SteamSession (anon / creds+guard / QR), CloudRpcClient (the actual cloud
-  RPCs), AuditEngine, WipeEngine, LocalInjectEngine (lock/relocate), CloudLogWatcher (the verdict reader)
-- `src/SteamCloudTamper.Cli` - command line face. good old `cmd`, no sparkles.
-- `src/SteamCloudTamper.Tui` - the pretty face. Spectre.Console, gradients, glow, a sine wave, QR
-  rendering in the terminal. yes we know the glow is excessive. no we wont remove it. `SCT_TUI_FLAT=1`
-  if you hate fun.
-- `src/SteamCloudTamper` - the one exe that figures out which face you want (no args + console = TUI,
-  flags = CLI). `tools/publish.ps1` builds the self-contained single file into `dist/`.
-- `tools/steamcloudsave` - `SteamCloudSave.dll`, a steam_api64 shim / shadow lane for games that should
-  never touch your real cloud. mounts: shim, gbe `load_dlls`, OST `[inject]`.
-- `integrations/opensteamtool` - OST toml snippet, lua pool snippet, the "make the gui show synced" writeup.
-- `tests/SteamCloudTamper.Core.Tests` - xunit. 54 passing. the ones that ssh into steam are the fun ones.
+## quick start
+
+```
+dist\SteamCloudTamper.exe          # double-click = TUI, flags = CLI
+```
+
+1. `detect` -- finds Steam + accounts + libraries
+2. `scan` -- audits local userdata buckets (per account/app) + barcode tags
+3. `pool discover` -- sweeps the machine for container appids
+4. `pool probe` -- lets the running Steam client test writability, reads verdict from cloud_log
+5. `park <gameAppId>` -- parks a game's saves into a safe bucket
+
+No .NET runtime needed -- the exe is self-contained. Running from source requires
+the .NET 10 SDK (on this machine it lives at `C:\Users\kaneki\dotnet10` -- yes
+it's not on PATH, no we don't know why either).
+
+---
 
 ## commands
 
-```
-detect                  find steam + accounts + libraries (it printed something, use it)
-scan                    audit local userdata buckets (per account/app) + barcode tags
-remote-list --app <id>  list files in a cloud bucket (may just say AccessDenied, embrace it)
-probe <appid...>        check what the backend allows: enumerate / upload / delete
-wipe <appid> <file> [--blank] [--force]      delete or blank one cloud file
-wipe-all <appid> [--blank] [--force]         wipe a whole bucket
-guards add|rm|ls <appid>   never-touch list (persisted, so you dont nuke your own saves by accident)
-inject <uid3> <appid> <file> [remote-name]   local user drop + remotecache.vdf regen
-lock/unlock <uid3> <appid>                    read-only file blocks steam re-creating the folder
-relocate/unrelocate <uid3> <appid>            junction-isolate bucket into the SCT stash
+### discovery & audit
 
-parking brain (anti-ban: private saves, real apps, never public flooding):
-    pool list | refresh        the curated slot pool (owned-game buckets NEVER picked by default)
-    pool discover [--net]      sweep the machine for container appids: pool + userdata buckets +
-                               OST lua addappid hooks + CloudRedirect host + SLS/GreenLuma configs.
-                               each container gets kind/source/posture + AutoClouded flag, snapshot
-                               lands in the registry. --net also reads cloud_log for the AutoCloud part.
-    pool probe [--uid <id3>] [--force] [--wait-sec N] [--lane client|rpc] [--console]
-                               one private file, let the RUNNING steam client sync it, read the verdict
-                               from cloud_log. verdicts go to the registry. nobody logs in. its neat.
-                               --lane rpc probes writability directly through a real SCT logon instead;
-                               --console re-enables the (unreliable on new builds) Steam Console push.
-park <gameAppId> [--uid <id3>] [--force] [--lane auto|client|rpc|stage] [--bucket <appid>]
-         [--spread N] [--copies N] [--stealth] [--wait-sec N] [--verify] [--console]
-         [--allow-owned] [--posture real,provider,redirected|any]
-                               auto   = steam up + right account -> client lane; else rpc
-                               client = stage local, the signed-in session does the upload
-                                        (real UFS or the CR provider, live postures tell us where)
-                               rpc    = SCT logs in itself (env creds or QR) and uploads directly.
-                                        the ONLY real upload for buckets the client never
-                                        AutoClouds itself (lookin at you, 480)
-                               stage  = files local only, the session syncs whenever it feels like it
-                               --bucket pins all files to ONE explicit slot (refuses blocked/denied ones)
-                               --allow-owned = OPT-IN consent: owned-game buckets (real userdata
-                                        containers + OwnedReserved pool tiers) join the universe.
-                                        NEVER auto-picked without it.
-                               --posture filters the candidate universe: real / provider /
-                                        redirected, comma-separated ('any' = no filter).
-                                        default ranking: VerifiedWritable real > AutoClouded real >
-                                        probe-candidate > provider/redirected; activation-tool
-                                        containers (OST lua / SLS / GreenLuma) only fill in once
-                                        real slots run out
-                               --proxy <appid> ride an OWNED bucket instead of the pool: unowned saves
-                                        get parked under a sls-<game>/ namespace inside your own bucket
-                                        (a la Ace SLS, no client hook needed - see APPID-PROXY.md).
-                                        rpc-only. auto-resolves from the CloudProxies map.
-                               --verify re-enumerates each bucket right after uploading and sha-compares
-                                        what's on the wire (config VerifyAfterPark=true makes it a habit).
-    proxy status | set <game> <proxy> | rm <game> | ls
-                                the appid-proxy map: game -> owned bucket. game 0 = default for
-                                EVERY unowned game without its own entry. lives in the config.
-    client status | sync <appid> [--down] [--console] | tell <command>
-                               client lane: status / force a sync tick / raw console cmd.
-                               sync rides the AutoCloud tick; add --console to opt back into
-                               the Steam Console push (works on old client builds).
-    provider status | init [sync-dir] | ls [--uid <id3>] [--app <appid>]
-                               CloudRedirect folder-provider management (SCT writes the config)
-    unpark <storageAppId> <name> [outdir]    download + strip barcode, original bytes back
-    restore <gameAppId> [--uid <id3>] [--force] [--out <dir>] [--json]
-                                pull a parked save BACK into the game's local bucket
-                                (registry lookup; tails userdata as fallback so it works
-                                from any machine). refuses to clobber a differing local
-                                save unless --force. parked copies stay in the cloud.
-    check [<gameAppId>] [--uid <id3>] [--json]
-                                compare every parked save vs the local game-bucket copy:
-                                match / diff / missing. exit code 1 on any diff.
-                                --json turns park/restore/check results machine-readable.
-    rebuild                   tail-scan userdata -> registry.json (1000 files < 1s, ur welcome)
-    barcode <file> | barcode make <payload>  show/render barcode trailers
+| Command | Description |
+|---|---|
+| `detect` | Find Steam + accounts + libraries (it printed something, use it) |
+| `scan` | Audit local userdata buckets (per account/app) + barcode tags |
+| `remote-list --app <id>` | List files in a cloud bucket (may just say AccessDenied, embrace it) |
+| `probe <appid...>` | Check what the backend allows: enumerate / upload / delete |
+| `rebuild` | Tail-scan userdata -> registry.json (1000 files < 1s, ur welcome) |
 
-web lane (needs SCT_COOKIE):   web ls | files <appid> | dl <appid> <file> [outfile]
-ferry (park into owned 480 / spacewar):  ferry ls | upload <local-file> [name] | dl <name> [outfile]
-```
+### cloud operations
 
-the whole thing ships as ONE exe: `dist\SteamCloudTamper.exe` (self-contained, no .net needed,
-doubleclick = TUI - cmd flags = CLI). running from source needs the net10 sdk which on this
-machine lives at `C:\Users\kaneki\dotnet10` (yes its not on PATH, no we dont know why either).
+| Command | Description |
+|---|---|
+| `wipe <appid> <file> [--blank] [--force]` | Delete or blank one cloud file |
+| `wipe-all <appid> [--blank] [--force]` | Wipe a whole bucket |
+| `inject <uid3> <appid> <file> [remote-name]` | Local user drop + remotecache.vdf regen |
+| `unpark <storageAppId> <name> [outdir]` | Download + strip barcode, original bytes back |
+| `barcode <file>` \| `barcode make <payload>` | Show / render barcode trailers |
 
-## the barcode lane (why parking isnt just dumping files)
+### guards (never-touch list)
 
-parked saves get a trailer glued to their ass: `SCTB1` magic + crc32 + payload
+| Command | Description |
+|---|---|
+| `guards add <appid>` | Persistently protect a bucket from accidental wipes |
+| `guards rm <appid>` | Remove protection |
+| `guards ls` | List protected buckets |
+
+### local isolation
+
+| Command | Description |
+|---|---|
+| `lock <uid3> <appid>` | Read-only file blocks Steam re-creating the folder |
+| `unlock <uid3> <appid>` | Reverse the lock |
+| `relocate <uid3> <appid>` | Junction-isolate bucket into the SCT stash |
+| `unrelocate <uid3> <appid>` | Reverse the relocation |
+
+### parking brain (anti-ban: private saves, real apps, never public flooding)
+
+| Command | Description |
+|---|---|
+| `pool list` | Show the curated slot pool (owned-game buckets NEVER picked by default) |
+| `pool refresh` | Re-curate the pool |
+| `pool discover [--net]` | Sweep the machine for container appids: pool + userdata buckets + OST lua addappid hooks + CloudRedirect host + SLS/GreenLuma configs. Each container gets kind/source/posture + AutoClouded flag, snapshot in registry. `--net` also reads cloud_log for AutoCloud. |
+| `pool probe [--uid] [--force] [--wait-sec N] [--lane client\|rpc] [--console]` | One private file, let the running Steam client sync it, read the verdict from cloud_log. `--lane rpc` probes writability directly through a real SCT logon. |
+| `park <gameAppId> [options]` | Park a game's saves (see options below) |
+| `restore <gameAppId> [--uid] [--force] [--out <dir>] [--json]` | Pull a parked save back into the game's local bucket. Registry lookup; tails userdata as fallback. Refuses to clobber differing local saves without `--force`. |
+| `check [<gameAppId>] [--uid] [--json]` | Compare every parked save vs local game-bucket copy: match / diff / missing. Exit code 1 on any diff. |
+
+#### park options
+
+| Option | Description |
+|---|---|
+| `--uid <id3>` | Target a specific Steam user |
+| `--lane auto\|client\|rpc\|stage` | `auto` = Steam up + right account -> client lane; else rpc. `client` = stage local, session uploads. `rpc` = SCT logs in itself (env creds or QR), uploads directly. `stage` = files local only. |
+| `--bucket <appid>` | Pin all files to ONE explicit slot (refuses blocked/denied ones) |
+| `--spread N` | Fan files across N buckets |
+| `--copies N` | Duplicate so one purged bucket can't nuke your whole save |
+| `--stealth` | Hash names so they look native (the trailer still knows) |
+| `--verify` | Re-enumerate each bucket after uploading and SHA-compare what's on the wire |
+| `--allow-owned` | OPT-IN consent: owned-game buckets join the universe. Never auto-picked without it. |
+| `--posture real,provider,redirected\|any` | Filter the candidate universe. Default ranking: VerifiedWritable real > AutoClouded real > probe-candidate > provider/redirected. |
+| `--proxy <appid>` | Ride an OWNED bucket instead of the pool: unowned saves get parked under `sls-<game>/` namespace inside your own bucket. RPC-only. Auto-resolves from the CloudProxies map. |
+| `--console` | Opt back into the Steam Console push (works on old client builds only) |
+
+### proxy management
+
+| Command | Description |
+|---|---|
+| `proxy status` | Show the appid-proxy map |
+| `proxy set <game> <proxy>` | Map a game to a proxy bucket |
+| `proxy rm <game>` | Remove a mapping |
+| `proxy ls` | List all mappings |
+
+### client lane (riding the running session)
+
+| Command | Description |
+|---|---|
+| `client status` | Show client lane status |
+| `client sync <appid> [--down] [--console]` | Force a sync tick (rides the AutoCloud tick) |
+| `client tell <command>` | Raw console command |
+
+### provider (CloudRedirect)
+
+| Command | Description |
+|---|---|
+| `provider status` | Show CloudRedirect folder-provider status |
+| `provider init [sync-dir]` | Initialize the provider |
+| `provider ls [--uid] [--app]` | List provider contents |
+
+### web & ferry lanes
+
+| Command | Description |
+|---|---|
+| `web ls` | Web lane (needs `SCT_COOKIE`) |
+| `web files <appid>` | List cloud files via web |
+| `web dl <appid> <file> [outfile]` | Download via web |
+| `ferry ls` | Park into owned 480 / spacewar |
+| `ferry upload <local-file> [name]` | Upload via ferry |
+| `ferry dl <name> [outfile]` | Download via ferry |
+
+---
+
+## how it works
+
+### the barcode lane
+
+Parked saves get a trailer glued to their ass: `SCTB1` magic + CRC32 + payload
 
 ```
 <original-game-appid>|<steam-userid3>|<DDMMYYYY>     e.g. 588650|1201110076|09082026
 ```
 
-- the storage appid is NEVER in the payload - the bucket you are sitting in **is** the storage.
-- fresh pc, no registry, no problem: `rebuild` reads the last 4KB of every file and reconstructs
-  the whole map. we wrote it so it doesnt even try on files smaller than the window. ur welcome.
-- unparking strips the trailer. byte identical. promise (there is a crc32 so even a lie would be a
-  verifiable lie).
-- every lane reads/writes the same `%LOCALAPPDATA%\SCT\registry.json`.
+- The storage appid is NEVER in the payload -- the bucket you're sitting in **is** the storage.
+- Fresh PC, no registry, no problem: `rebuild` reads the last 4KB of every file and reconstructs the whole map.
+- Unparking strips the trailer. Byte identical. Promise (there is a CRC32 so even a lie would be a verifiable lie).
+- Every lane reads/writes the same `%LOCALAPPDATA%\SCT\registry.json`.
 
-## parking allocator rules (in order)
+### parking allocator rules (in order)
 
-1. hidden/dev apps, valve tools, mod hosts > old free games. owned-game buckets are tier 3 and stay
-   excluded until you opt in with `--allow-owned` (TUI: a consent prompt) - never auto-picked without it.
-   posture ranking between same-tier real slots: VerifiedWritable real > AutoClouded real >
-   probe-candidate, and provider/redirected activation containers (OST lua, SLS, GreenLuma) only
-   fill in once real slots run out. `--posture real,provider,redirected` filters the universe.
-2. anti-ban: server-`Denied` slots (from pool probe) are skipped. `--spread` fans files out.
-   `--copies` duplicates so one purged bucket cant nuke your whole save. `--stealth` hashes names
-   so they look native (the trailer still knows).
-3. co-tanency wins - a bucket already holding other parked games is preferred.
-4. name collision or quota -> next candidate. deterministic. boring. safe.
+1. **Tier priority**: hidden/dev apps, Valve tools, mod hosts > old free games. Owned-game buckets are tier 3 and stay excluded until you opt in with `--allow-owned` (TUI: a consent prompt).
+2. **Posture ranking** (between same-tier real slots): VerifiedWritable real > AutoClouded real > probe-candidate. Provider/redirected activation containers (OST lua, SLS, GreenLuma) only fill in once real slots run out.
+3. **Anti-ban**: server-`Denied` slots are skipped. `--spread` fans files out. `--copies` duplicates. `--stealth` hashes names.
+4. **Co-tenancy wins**: a bucket already holding other parked games is preferred.
+5. **Collision / quota**: next candidate. Deterministic. Boring. Safe.
 
-## riding the running steam session (no sct login, mostly)
+### riding the running Steam session
 
-`SteamLocator` figures out who's signed in via `config/loginusers.vdf` (active -> autologin ->
-most recent, the normal pecking order). when that account is live:
+`SteamLocator` figures out who's signed in via `config/loginusers.vdf` (active -> autologin -> most recent). When that account is live:
 
-- `park` and `pool probe` default to the **client lane**: stage files, let real steam upload,
-  read the verdict from `logs/cloud_log.txt` (`Upload complete, result OK` / `Access Denied`).
-- **AutoCloud reality check (2026-08-10, watched this machine burn)** - steam only AutoClouds
-  buckets it manages *itself*. here that's appid 7 (real UFS, change number 65), 588650 (now
-  CloudRedirect-local), and the actually installed games. **480 and 113200 are NEVER
-  AutoClouded** - a staged file there just sits there. verdict stays "Unknown" and we tell you
-  straight. real upload into 480 requires `--lane rpc`.
-- **posture tracking** - every slot records where the upload actually landed: `real` (valve),
-  `provider` (CloudRedirect folder), `redirected` (ost lua hook - never touched valve), `local`
-  (staged, unconfirmed). the registry screen shows it live.
-- **steam console: opt-in at best** - `steam://open/console` opens on legacy client builds but not
-  current ones (checked with `-console`, checked without, checked angry). SCT skips it by default,
-  waits on the autocloud tick, and the deterministic real-upload lane is rpc. pass `--console` if
-  your client build still has a working console.
+- **Default lane is client**: stage files, let real Steam upload, read the verdict from `logs/cloud_log.txt` (`Upload complete, result OK` / `Access Denied`).
+- **AutoCloud reality check** (2026-08-10, watched this machine burn): Steam only AutoClouds buckets it manages *itself*. Here that's appid 7 (real UFS, change number 65), 588650 (now CloudRedirect-local), and actually installed games. **480 and 113200 are NEVER AutoClouded** -- a staged file there just sits there. Real upload into 480 requires `--lane rpc`.
+- **Posture tracking**: every slot records where the upload actually landed: `real` (Valve), `provider` (CloudRedirect folder), `redirected` (OST lua hook), `local` (staged, unconfirmed). The registry screen shows it live.
+- **Steam Console**: unreliable on current client builds, so the default lane is the tick. Old-build users can re-enable with `--console`.
 
-## "sync'd" in the steam GUI (OST + CloudRedirect, verified 2026-08-10)
+### smart appid containers
 
-for unowned games (dead cells 588650 etc) the client kept crying "cloud sync error". fix, proven
-end to end: OpenSteamTool built from main (v1.4.8 release predates the `[cloud]` host) +
-CloudRedirect v2.6.4 + `[cloud] enabled=true` in `opensteamtool.toml`, provider folder
-`D:\sct_provider`. cloud_log goes from `Access Denied` to `HTTP upload ... success` ->
-`Upload complete, result OK`, gui shows the cloud icon, everyone claps. details in
-`integrations/opensteamtool/OST-HOST-BUILD.md`.
+`pool discover` builds the whole universe of appids SCT may park into:
 
-## smart appid containers (the "switching" thing)
+| Source | What it finds |
+|---|---|
+| Pool slots | Spacewar, Steam Client 7, SteamVR suite, free games, mod hosts |
+| Real userdata | Games in the library |
+| OST lua `addappid` hooks | `config/lua/*.lua` -- never touch Valve, posture says so |
+| CloudRedirect host marker | When `[cloud]` is on |
+| SLS/Goldberg | `steam_settings/appid.txt` |
+| GreenLuma | `appidwhitelist.txt` (auto-probed, absent = skipped) |
 
-`pool discover` builds the whole universe of appids SCT may park into, saves it to the registry:
+Each container gets: kind (owned/free/hidden/modhost/activation), source, posture, AutoClouded flag. The TUI has the same view (Registry -> "Show discovered containers").
 
-- pool slots (spacewar, steam client 7, steamvr suite, free games, mod hosts)
-- real userdata buckets (games in the lib)
-- ost lua `addappid` hooks (`config/lua/*.lua`) - these never touch valve, posture says so
-- the cloudredirect host marker when `[cloud]` is on
-- sls/goldberg `steam_settings/appid.txt` + greenluma `appidwhitelist.txt` (auto-probed, absent = skipped)
-- each container: kind (owned/free/hidden/modhost/activation), source, posture, AutoClouded? and
-  the client's own cloud_log is consulted with `--net`
+> Actually proven on this machine: 41 containers. 5 lua hooks, 1 CR host marker, rest pool+real. Yes we count these things. It's a hobby.
 
-posture decides how much a container is "worth": redirected ones are disfavored for the rpc
-lane, real valve-touching ones are the good stuff. owned buckets show up but are never picked
-without consent. the TUI has the same view (Registry -> "Show discovered containers").
+---
 
-> actually proven on this machine: 41 containers. 5 lua hooks, 1 CR host marker, rest pool+real.
-> yes we count these things. its a hobby.
+## integrations
+
+### synced in the Steam GUI (OST + CloudRedirect, verified 2026-08-10)
+
+For unowned games (Dead Cells 588650 etc) the client kept crying "cloud sync error". Fix, proven end to end:
+
+1. OpenSteamTool built from main (v1.4.8 release predates the `[cloud]` host)
+2. CloudRedirect v2.6.4
+3. `[cloud] enabled=true` in `opensteamtool.toml`, provider folder `D:\sct_provider`
+
+cloud_log goes from `Access Denied` to `HTTP upload ... success` -> `Upload complete, result OK`, GUI shows the cloud icon, everyone claps. Details in `integrations/opensteamtool/OST-HOST-BUILD.md`.
+
+### appid proxy lane
+
+The same effect as Ace's hook, WITHOUT the hook -- because the RPC lane (SteamKit) writes the appid and filename itself:
+
+- `CloudProxy` (Core): `sls-<game>/` prefix helpers
+- `AppConfig.CloudProxies`: game -> proxy map, key 0 = default for ANY unowned game
+- `CloudProxyLane` (Engines): wraps `CloudRpcClient` with proxy-aware upload/delete/download
+- `park --proxy <appid>`: parks into the proxy bucket, rpc-only
+- `remote-list --app <game> --proxy <bucket>`: lists the game's namespace inside the proxy bucket
+- `unpark` / `wipe`: strip-aware, route through the lane
+- TUI: Settings -> "Proxy appids" (game=proxy pairs, comma-separated)
+
+See [docs/APPID-PROXY.md](docs/APPID-PROXY.md) for the full technical deep-dive on the original hook approach and how SCT's implementation differs.
+
+---
+
+## local isolation techniques
+
+| Technique | How |
+|---|---|
+| **CloudRedirect nullify** | Point the redirect at an empty private folder. Game never sees Steam's copy again. |
+| **lockfile blocker** (`lock`) | Windows refuses to create a folder where a file with that name exists. Delete the folder, plant a read-only file. Steam fails sync re-creation silently. `unlock` cleans up. Yes, this is kind of rude. No we don't care. |
+| **Junction isolation** (`relocate`) | Move the bucket into `%LOCALAPPDATA%\SCT\stash`, leave a junction. Steam reads/writes through the junction without knowing. |
+| **Hook lane** (`SteamCloudSave.dll`) | steam_api64 shim / `load_dlls` / OST `[inject]`: flags the game, all ISteamRemoteStorage calls get shadowed under `D:\sct_shadow\<appid>\`. Some games get mad about this. Those are called "unlocks". |
+| **Console tricks** | `steam://open/console` does NOT do what the 2019 writeups claim. Verified 2026-08-10: the console doesn't even open anymore. |
+
+---
 
 ## wipe reality check
 
-valve denies uploads to unowned games, server side, since ~april 2025, and even enumeration is
-denied. so wiping is a three-step dance:
+Valve denies uploads to unowned games, server side, since ~April 2025, and even enumeration is denied. So wiping is a three-step dance:
 
-1. `remote-list --app <id>` - does the bucket even exist / what's in it
-2. `probe <id>` - what does your account get to do: enumerate / upload / delete
-3. `wipe <id> <file>` - try delete, then blank-overwrite, accept the result
+1. `remote-list --app <id>` -- does the bucket even exist / what's in it
+2. `probe <id>` -- what does your account get to do: enumerate / upload / delete
+3. `wipe <id> <file>` -- try delete, then blank-overwrite, accept the result
 
-stuff valve wont remove gets the local treatment instead (below). some things are just
-permanent. like that one save from 2013. it hears you. it remembers.
+Some things are just permanent. Like that one save from 2013. It hears you. It remembers.
 
-## local isolation (for locked / unremovable buckets)
+---
 
-1. **CloudRedirect nullify** - point the redirect at an empty private folder instead of the real
-   userdata, game never sees steam's copy again. (CR itself lives outside this repo - we do the
-   server api + local files.)
-2. **lockfile blocker (`lock`)** - windows refuses to create a folder where a file with that name
-   exists. so we delete the folder (with `--force`, after a backup) and plant a read-only file
-   named after it. steam fails sync re-creation silently. `unlock` cleans up. yes, this is kind
-   of rude. no we dont care.
-4. **junction isolation (`relocate`)** - move the bucket into `%LOCALAPPDATA%\SCT\stash` and leave
-   a junction. steam reads/writes through the junction without knowing. `unrelocate` reverses.
-5. **hook lane (`SteamCloudSave.dll`)** - steam_api64 shim / `load_dlls` / OST `[inject]`:
-   `steamcloudsave.cfg` flags the game, all its ISteamRemoteStorage calls get shadowed under
-   `D:\sct_shadow\<appid>\`. the game can't see your real cloud. some games get mad about this.
-   those are called "unlocks". (the GUI "synced" path for those is OST `[cloud]` + CloudRedirect.)
-3. **console tricks** - `steam://open/console` does NOT do what the 2019 writeups claim. verified
-   on 2026-08-10, the console doesnt even open anymore. the real per-app client switches are:
-   settings > cloud toggles (owned apps), the lockfile, or cloudredirect hiding. sorry.
+## research notes
 
-## research notes (why this whole mess exists)
+- **760 pollution**: SteamTools rewrote cloud requests for unowned games into appid 760 without per-game prefixes, so saves collided across games. STFixer, CloudRedirect, and this repo all started with the same bruised knuckles.
+- **Valve patch April 2025**: cloud UFS for unowned appids -> `AccessDenied` on enumerate/upload/delete. Confirmed even logged in.
+- **Retail SteamCloudFileManager**: even they get physically rejected for special internal appids (760/7) server side, so they resort to CDP-hijacked web sessions. Our web lane is read-only by design -- same wall, less credit card drama.
+- **Old conflict-dialog trick** (zero files, delete remotecache, "upload nothing"): predates the 2025 patch and only really works for owned games now.
+- **Active lanes for stuck unowned buckets**: web (read/backup), ferry (480/hidden), barcode park (allocator, spread/copies/stealth), client lane (staged via running session), local lockout/junction, hook shim, CloudRedirect via OST `[cloud]`, and Steam support tickets (may god have mercy on your soul).
+- **No flooding. Ever.** Every probe/park write is one small private file in a real app's bucket. The 760 mass-dump is EXACTLY what got UFS locked down. SCT does the opposite on purpose.
 
-- **760 pollution, confirmed by multiple RE projects**: steamtools rewrote cloud requests for
-  unowned games into appid 760 without per-game prefixes, so saves collided across games and got
-  mirrored into every injected app's userdata. STFixer, cloudredirect and this repo all started
-  with the same bruised knuckles.
-- **valve patch april 2025**: cloud UFS for unowned appids -> `AccessDenied` on
-  enumerate/upload/delete. confirmed even logged in.
-- **retail SteamCloudFileManager**: even they get physically rejected for special internal
-  appids (760/7) server side, so they resort to CDP-hijacked web sessions. our web lane is
-  read-only by design - same wall, less credit card drama.
-- **old conflict-dialog trick** (zero files, delete remotecache, "upload nothing"): predates the
-  2025 patch and only really works for owned games now. like mail order. fine in its day.
-- **active lanes for stuck unowned buckets**: web (read/backup), ferry (480/hidden), barcode
-  park (allocator, spread/copies/stealth), client lane (staged via running session), local
-  lockout/junction, hook shim, cloudredirect via OST `[cloud]`, and steam support tickets (may
-  god have mercy on your soul).
-- **no flooding. ever.** every probe/park write is one small private file in a real app's
-  bucket. the 760 mass-dump is EXACTLY what got UFS locked down. SCT does the opposite on
-  purpose and the pool probe is there to keep it that way.
+---
 
 ## known broken / wontfix
 
-- steam console: unreliable on current client builds, so the default lane is the tick. old-build
-  users can re-enable the push with `--console`.
-- 480 / 113200: never autoclouded by the client. rpc lane or bust (and rpc needs a real session -
-  anonymous uploads are denied even for spacewar. valve said so. we screamed).
-- config location: `steamcloudtamper.json` next to the process, or wherever `SCT_CONFIG` points.
-  the registry lives separately at `%LOCALAPPDATA%\SCT\registry.json` (or `SCT_REGISTRY`).
-- no credentials ship with the program. SCT_USER/SCT_PASS or scan a QR in the TUI. reasonably
-  sure you prefer "scan a qr" over "send us your password in a txt".
+- **Steam Console**: unreliable on current client builds, so the default lane is the tick. Old-build users can re-enable with `--console`.
+- **480 / 113200**: never AutoClouded by the client. RPC lane or bust (anonymous uploads are denied even for spacewar. Valve said so. We screamed).
+- **Config location**: `steamcloudtamper.json` next to the process, or wherever `SCT_CONFIG` points. Registry lives at `%LOCALAPPDATA%\SCT\registry.json` (or `SCT_REGISTRY`).
+- **No credentials ship with the program.** `SCT_USER`/`SCT_PASS` or scan a QR in the TUI.
 
-## build
+---
 
-```
+## build from source
+
+```powershell
 powershell -ExecutionPolicy Bypass -File tools\publish.ps1      # -> dist\SteamCloudTamper.exe
 dotnet test tests\SteamCloudTamper.Core.Tests                    # 54 passing, usually
 ```
 
-tui extras: `SCT_TUI_ASCII=1` // `SCT_TUI_NERD=1` // `SCT_TUI_FLAT=1` if you hate gradients.
-crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log`
+TUI extras: `SCT_TUI_ASCII=1` // `SCT_TUI_NERD=1` // `SCT_TUI_FLAT=1` if you hate gradients.
+Crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log`
+
+### project layout
+
+| Project | What it is |
+|---|---|
+| `src/SteamCloudTamper.Core` | Models, VDF parser/writer, remotecache generator, root-path map, Steam install/account discovery, config, and the parking brain (PoolDb + registry + allocator + discoverer) |
+| `src/SteamCloudTamper.Engines` | SteamSession (anon / creds+guard / QR), CloudRpcClient (the actual cloud RPCs), AuditEngine, WipeEngine, LocalInjectEngine (lock/relocate), CloudLogWatcher |
+| `src/SteamCloudTamper.Cli` | Command line face. Good old `cmd`, no sparkles. |
+| `src/SteamCloudTamper.Tui` | The pretty face. Spectre.Console, gradients, glow, a sine wave, QR rendering in the terminal. Yes we know the glow is excessive. No we won't remove it. |
+| `src/SteamCloudTamper` | The one exe that figures out which face you want (no args + console = TUI, flags = CLI). `tools/publish.ps1` builds the self-contained single file into `dist/`. |
+| `tools/steamcloudsave` | `SteamCloudSave.dll` -- steam_api64 shim / shadow lane for games that should never touch your real cloud. |
+| `integrations/opensteamtool` | OST toml snippet, lua pool snippet, the "make the GUI show synced" writeup. |
+| `tests/SteamCloudTamper.Core.Tests` | xunit. 54 passing. The ones that SSH into Steam are the fun ones. |
+
+---
+
+## anti-flooding rule (all lanes)
+
+SCT never mass-uploads, never uses public/anonymous dumps (the SteamTools-760 pattern is what got cloud UFS locked down). Every write is ONE small private file in a REAL app's cloud bucket -- chosen by PoolDb, verified per-account by `pool probe`, and spread/mirrored via `--spread`/`--copies` so no single slot ever carries a detectable pattern.
