@@ -116,12 +116,13 @@ public static class PoolScoring
     /// Storage-quality bonus, per the ranking in docs/PLAN.md:
     /// VerifiedWritable real &gt; AutoClouded real &gt; probe-candidate &gt; provider/redirected.
     /// A null/unknown posture counts as real (curated PoolDb slots face Valve by design);
-    /// redirected / proxied / local containers are activation-class slots and get heavily
-    /// penalized so they are only chosen once real candidates are exhausted.
+    /// provider / redirected / proxied / local containers are activation-class slots and
+    /// get heavily penalized so they are only chosen once real candidates are exhausted.
+    /// "provider" means CloudRedirect folder -- it touches the local CR daemon, not Valve.
     /// </summary>
     public static int PostureScore(string? posture, bool autoClouded, string? probeState)
     {
-        var isReal = posture is null or "real" or "provider";
+        var isReal = posture is null or "real";
         if (!isReal) return -60;
         if (probeState is "VerifiedWritable") return 30;
         if (autoClouded) return 20;

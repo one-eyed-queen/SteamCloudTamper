@@ -13,7 +13,13 @@ public sealed class LocalInjectEngine
         Directory.CreateDirectory(remote);
 
         var name = remoteName ?? Path.GetFileName(sourcePath);
+        var safeName = Core.PathSanitizer.SanitizeFileName(name);
+        if (safeName is null)
+            throw new InvalidOperationException($"filename '{name}' failed path traversal check");
+        name = safeName;
+
         var dest = Path.Combine(remote, name);
+        Core.PathSanitizer.ResolveInside(remote, dest);
         File.Copy(sourcePath, dest, overwrite: true);
 
         RegenerateVdf(userDataAppDir);

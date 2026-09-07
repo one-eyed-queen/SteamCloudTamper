@@ -180,3 +180,135 @@ public class VerifySlotTests
         Assert.True(slot.WithVerify(true).Verified);
     }
 }
+
+public class PathSanitizerTests
+{
+    [Theory]
+    [InlineData("save.dat", true)]
+    [InlineData("my_game_save.json", true)]
+    [InlineData("test-file_v2.cfg", true)]
+    [InlineData("simple", true)]
+    public void IsSafeFileName_AcceptsValidNames(string name, bool expected)
+    {
+        Assert.Equal(expected, PathSanitizer.IsSafeFileName(name));
+    }
+
+    [Theory]
+    [InlineData("../etc/passwd", false)]
+    [InlineData("foo/bar.txt", false)]
+    [InlineData("foo\\bar.txt", false)]
+    [InlineData("\\\\server\\share", false)]
+    [InlineData("C:\\Windows\\system32", false)]
+    [InlineData("CON", false)]
+    [InlineData("NUL.txt", false)]
+    [InlineData("COM1", false)]
+    [InlineData("LPT1.dat", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData(".", false)]
+    [InlineData("..", false)]
+    public void IsSafeFileName_RejectsMaliciousNames(string name, bool expected)
+    {
+        Assert.Equal(expected, PathSanitizer.IsSafeFileName(name));
+    }
+
+    [Theory]
+    [InlineData("save.dat", "save.dat")]
+    [InlineData("path/to/save.dat", "save.dat")]
+    [InlineData("path\\to\\save.dat", "save.dat")]
+    [InlineData("../evil.txt", "evil.txt")]
+    [InlineData("normal_file.json", "normal_file.json")]
+    public void SanitizeFileName_ExtractsSafeBasename(string input, string expected)
+    {
+        Assert.Equal(expected, PathSanitizer.SanitizeFileName(input));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("CON")]
+    [InlineData("NUL")]
+    public void SanitizeFileName_ReturnsNullForUnsalvageable(string input)
+    {
+        Assert.Null(PathSanitizer.SanitizeFileName(input));
+    }
+
+    [Fact]
+    public void ResolveInside_ThrowsOnTraversal()
+    {
+        var baseDir = Path.Combine(Path.GetTempPath(), "sct_test_base");
+        var safePath = Path.Combine(baseDir, "subdir", "file.txt");
+        var traversalPath = Path.Combine(baseDir, "..", "outside", "file.txt");
+
+        // safe path should resolve without throwing
+        var resolved = PathSanitizer.ResolveInside(baseDir, safePath);
+        Assert.StartsWith(Path.GetFullPath(baseDir), resolved);
+
+        // traversal path should throw
+        Assert.Throws<InvalidOperationException>(() => PathSanitizer.ResolveInside(baseDir, traversalPath));
+    }
+}
+
+public class PostureScoreTests
+{
+    [Fact]
+    public void NullPostureCountsAsReal()
+    {
+        Assert.Equal(10, PoolScoring.PostureScore(null, false, null));
+    }
+
+    [Fact]
+    public void RealPostureScoresPositive()
+    {
+        Assert.True(PoolScoring.PostureScore("real", false, null) > 0);
+    }
+
+    [Fact]
+    public void ProviderPostureIsPenalized()
+    {
+        // provider = CloudRedirect folder, should be penalized like redirected
+        Assert.Equal(-60, PoolScoring.PostureScore("provider", false, null));
+    }
+
+    [Fact]
+    public void RedirectedPostureIsPenalized()
+    {
+        Assert.Equal(-60, PoolScoring.PostureScore("redirected", false, null));
+    }
+
+    [Fact]
+    public void ProxiedPostureIsPenalized()
+    {
+        Assert.Equal(-60, PoolScoring.PostureScore("proxied", false, null));
+    }
+
+    [Fact]
+    public void VerifiedWritableBeatsAutoClouded()
+    {
+        var verified = PoolScoring.PostureScore("real", false, "VerifiedWritable");
+        var autoClouded = PoolScoring.PostureScore("real", true, null);
+        Assert.True(verified > autoClouded);
+    }
+}
+
+public class RootPathMapTests
+{
+    [Fact]
+    public void ResolveWin_SteamCloudPathContainsAppId()
+    {
+        var path = RootPathMap.ResolveWin(0, @"C:\Steam", 12345, 588650);
+        Assert.Contains("588650", path);
+        Assert.Contains("12345", path);
+        Assert.Contains("C:\\Steam", path);
+        Assert.DoesNotContain("{AppID}", path);
+        Assert.DoesNotContain("{appid}", path);
+    }
+
+    [Fact]
+    public void ResolveWin_AllPlaceholdersAreReplaced()
+    {
+        var path = RootPathMap.ResolveWin(0, @"D:\Games\Steam", 99999, 12345);
+        Assert.DoesNotContain("{", path);
+        Assert.DoesNotContain("}", path);
+    }
+}

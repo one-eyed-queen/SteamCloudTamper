@@ -13,12 +13,34 @@ public sealed class CloudRpcClient(SteamSession session)
     {
         get
         {
+            if (!session.IsConnected)
+                throw new CloudRpcException("not connected to Steam - check your network connection");
             if (!session.IsLoggedOn)
-                throw new CloudRpcException("not logged on to Steam - a real session is required for cloud RPCs");
+                throw new CloudRpcException("not logged on to Steam - a real session is required for cloud RPCs (set SCT_USER/SCT_PASS or SCT_AUTH_MODE=qr)");
             var handlers = session.Client.GetHandler<SteamUnifiedMessages>();
             return handlers is null
                 ? throw new CloudRpcException("SteamUnifiedMessages handler unavailable - reconnect and retry")
                 : _service ??= handlers.CreateService<Cloud>();
+        }
+    }
+
+    /// <summary>Quick connectivity check: enumerates 1 file from a known-writable bucket.</summary>
+    public async Task<bool> TestConnectionAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var resp = await CallAsync(() => Service.EnumerateUserFiles(new CCloud_EnumerateUserFiles_Request
+            {
+                appid = 480,
+                extended_details = false,
+                count = 1,
+                start_index = 0,
+            }), ct);
+            return resp.Result is EResult.OK or EResult.AccessDenied;
+        }
+        catch
+        {
+            return false;
         }
     }
 

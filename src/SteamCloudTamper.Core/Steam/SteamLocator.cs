@@ -304,16 +304,16 @@ public static class SteamLocator
 
     /// <summary>
     /// Where an upload for this AppID actually lands right now:
-    ///  "redirected" - OST lua addappid hook (never touches Valve)
-    ///  "provider"   - CloudRedirect intercepting (folder provider on this machine)
-    ///  "real"       - straight to Valve UFS
-    /// order matters: lua first, becuase a hooked app stays hooked no matter what
-    /// the toml says.
+    ///  "redirected" - OST lua addappid hook, but CR is NOT loaded (hook only, no provider)
+    ///  "provider"   - OST lua addappid hook AND CloudRedirect is loaded (folder provider)
+    ///  "real"       - straight to Valve UFS (no hook, or hook but no CR to intercept)
+    /// CloudRedirect is per-appid: only apps whose addappid hook feeds into the CR
+    /// provider get "provider". An unhooked app goes to Valve even when CR is globally enabled.
     /// </summary>
     public static string SyncPosture(string steamPath, uint appId)
     {
-        if (IsOstRedirected(steamPath, appId)) return "redirected";
-        if (IsCloudRedirectLoaded(steamPath)) return "provider";
+        if (IsOstRedirected(steamPath, appId))
+            return IsCloudRedirectLoaded(steamPath) ? "provider" : "redirected";
         return "real";
     }
 }

@@ -68,21 +68,48 @@ public sealed class SteamWebClient
 
     public async Task<byte[]?> DownloadAsync(uint appId, string remotePath, CancellationToken ct = default)
     {
-        var resp = await _http.GetAsync(
-            $"https://store.steampowered.com/account/remotestorageapp/?appid={appId}&filepath={Uri.EscapeDataString(remotePath)}", ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        try
+        {
+            var resp = await _http.GetAsync(
+                $"https://store.steampowered.com/account/remotestorageapp/?appid={appId}&filepath={Uri.EscapeDataString(remotePath)}", ct);
+            if (!resp.IsSuccessStatusCode) return null;
 
-        var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-        return bytes.Length > 0 && bytes.Length < 4096 && System.Text.Encoding.UTF8.GetString(bytes).Contains("<html") ? null : bytes;
+            var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+            return bytes.Length > 0 && bytes.Length < 4096 && System.Text.Encoding.UTF8.GetString(bytes).Contains("<html") ? null : bytes;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (TaskCanceledException)
+        {
+            return null;
+        }
     }
 
     private async Task<string> GetStringAsync(string url, CancellationToken ct)
     {
-        var resp = await _http.GetAsync(url, ct);
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await _http.GetAsync(url, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException($"Network error while contacting {url}: {ex.Message}");
+        }
+        catch (TaskCanceledException)
+        {
+            throw new InvalidOperationException($"Timed out contacting {url}");
+        }
+
         if (resp.StatusCode == HttpStatusCode.Redirect && resp.Headers.Location?.ToString().Contains("login", StringComparison.OrdinalIgnoreCase) == true
             || resp.StatusCode == HttpStatusCode.Forbidden)
             throw new InvalidOperationException("Not logged into Steam store (set SCT_COOKIE to a session cookie)");
         resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadAsStringAsync(ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        if (body.Length < 256 && body.Contains("<html", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Unexpected HTML response from {url} - session may be expired (renew SCT_COOKIE)");
+        return body;
     }
 }

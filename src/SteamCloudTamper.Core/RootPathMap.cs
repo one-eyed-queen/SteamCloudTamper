@@ -6,7 +6,7 @@ public static class RootPathMap
 {
     public static readonly RootLocation[] All =
     [
-        new(0, "Steam Cloud", "{Steam}/userdata/{uid}/{appid}/remote/", "{Steam}/userdata/{uid}/{appid}/remote/", "{Steam}/userdata/{uid}/{appid}/remote/", true),
+        new(0, "Steam Cloud", "{Steam}/userdata/{uid}/{AppID}/remote/", "{Steam}/userdata/{uid}/{AppID}/remote/", "{Steam}/userdata/{uid}/{AppID}/remote/", true),
         new(1, "GameInstall", "{Steam}/steamapps/common/{Game}/", "{Steam}/steamapps/common/{Game}/", "{Steam}/steamapps/common/{Game}/", true),
         new(2, "Documents", "%USERPROFILE%/Documents/", "~/Documents/", "~/Documents/", true),
         new(3, "AppData Roaming", "%APPDATA%/", "~/Library/Application Support/", "~/.config/", false),

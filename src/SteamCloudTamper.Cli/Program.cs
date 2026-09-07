@@ -45,6 +45,7 @@ public static class Program
                 "proxy" => await ProxyCmd(args, config),
                 "rebuild" => RebuildCmd(args, config),
                 "barcode" => BarcodeCmd(args, config),
+                "doctor" => await DoctorCmd(args, config),
                 _ => Help()
             };
         }
@@ -384,14 +385,13 @@ public static class Program
 
     private static int LockBucket(string[] args, AppConfig config)
     {
-        if (args.Length < 4 || !uint.TryParse(args[2], out var uid))
+        if (args.Length < 4 || !uint.TryParse(args[2], out var uid) || !uint.TryParse(args[3], out var appId))
         {
             Console.WriteLine("usage: lock <uid3> <appid>   | unlock <uid3> <appid>");
             return 1;
         }
 
         var unlock = args[1] == "unlock";
-        var appId = uint.Parse(args[2]);
         if (config.GuardedAppIds.Contains(appId))
         {
             Console.WriteLine($"appid {appId} is guarded, skipping");
@@ -603,7 +603,12 @@ public static class Program
         if (!ok)
         {
             await session.DisposeAsync();
-            throw new InvalidOperationException("could not log on to Steam (set SCT_USER/SCT_PASS or SCT_AUTH_MODE=qr)");
+            var hint = mode == "qr"
+                ? "QR scan may have timed out - try again"
+                : user is { Length: > 0 }
+                    ? "check SCT_USER/SCT_PASS credentials, or try SCT_AUTH_MODE=qr"
+                    : "set SCT_USER/SCT_PASS for account ops, or SCT_AUTH_MODE=qr for QR login";
+            throw new InvalidOperationException($"could not log on to Steam ({hint})");
         }
 
         return session;
@@ -1529,8 +1534,18 @@ public static class Program
             else
                 Console.WriteLine($"  [{slot.StorageAppId}] {wireName}: no SCT barcode trailer ({tagged.Length}b) - restoring as-is");
 
+            var safeName = PathSanitizer.SanitizeFileName(origName);
+            if (safeName is null)
+            {
+                results.Add(new RestoreResult(slot.StorageAppId, wireName, origName, "rejected", null, "filename failed path traversal check"));
+                Console.WriteLine($"  [{slot.StorageAppId}] {wireName}: REJECTED - filename '{origName}' failed path traversal check");
+                continue;
+            }
+            origName = safeName;
+
             Directory.CreateDirectory(gameRemoteRoot);
             var dest = Path.Combine(gameRemoteRoot, origName);
+            PathSanitizer.ResolveInside(gameRemoteRoot, dest);
             var status = "ok";
             var note = "";
             var wrote = false;
@@ -1758,6 +1773,108 @@ public static class Program
         return SteamLocator.GetActiveAccount(steam)?.AccountId ?? 0;
     }
 
+    /// <summary>
+    /// doctor - self-test: verifies Steam install, accounts, registry integrity,
+    /// pool status, and optionally cloud connectivity. Outputs structured diagnostics.
+    /// </summary>
+    private static async Task<int> DoctorCmd(string[] args, AppConfig config)
+    {
+        var checks = new List<(string Name, bool Pass, string Detail)>();
+        var verbose = Has(args, "--verbose") || Has(args, "-v");
+
+        // 1. Steam install
+        var steam = SteamLocator.DetectInstallPath();
+        var steamOk = steam is not null && Directory.Exists(steam);
+        checks.Add(("steam-install", steamOk, steam ?? "(not found)"));
+
+        // 2. Steam running
+        var running = SteamLocator.IsRunning();
+        checks.Add(("steam-running", running, running ? "yes" : "no (client lane unavailable)"));
+
+        // 3. Steam path override
+        var hasOverride = config.SteamPathOverride is not null;
+        checks.Add(("steam-override", true, hasOverride ? config.SteamPathOverride! : "(none)"));
+
+        // 4. Config file
+        var cfgPath = AppConfig.ResolveDefaultPath();
+        var cfgExists = File.Exists(cfgPath);
+        checks.Add(("config-file", cfgExists, cfgPath));
+
+        // 5. Registry file
+        var regPath = SctRegistry.DefaultPath();
+        var regExists = File.Exists(regPath);
+        checks.Add(("registry-file", regExists, regPath));
+
+        if (regExists && steam is not null)
+        {
+            var reg = SctRegistry.Load();
+            checks.Add(("registry-slots", reg.Slots.Count > 0, $"{reg.Slots.Count} slot(s)"));
+            checks.Add(("registry-probes", reg.PoolProbes.Count > 0, $"{reg.PoolProbes.Count} probe(s)"));
+            checks.Add(("registry-discovered", reg.Discovered.Count > 0, $"{reg.Discovered.Count} container(s)"));
+
+            // check for stale slots (storage appid not in discovered containers or pool)
+            var staleSlots = reg.Slots.Where(s =>
+                PoolDb.Find(s.StorageAppId) is null &&
+                reg.Discovered.All(c => c.AppId != s.StorageAppId)).ToList();
+            if (staleSlots.Count > 0)
+                checks.Add(("stale-slots", false, $"{staleSlots.Count} slot(s) reference non-existent storage appids"));
+        }
+
+        // 6. Guard list
+        checks.Add(("guards", true, $"{config.GuardedAppIds.Count} guarded"));
+
+        // 7. Proxy map
+        checks.Add(("proxies", true, $"{config.CloudProxies.Count} mapping(s)"));
+
+        // 8. Pool pool
+        var usable = PoolDb.Usable().Count();
+        checks.Add(("pool-usable", usable > 0, $"{usable} usable slot(s)"));
+
+        // 9. Active account (if Steam is running)
+        if (running && steam is not null)
+        {
+            var active = SteamLocator.GetActiveAccount(steam);
+            checks.Add(("active-account", active is not null, active is not null
+                ? $"{active!.AccountId} ({active.DisplayName ?? "?"})" : "(none)"));
+        }
+
+        // 10. Cloud connectivity (optional -- with --cloud flag)
+        if (Has(args, "--cloud"))
+        {
+            try
+            {
+                await using var session = await ConnectSessionAsync();
+                var rpc = new CloudRpcClient(session);
+                var ok = await rpc.TestConnectionAsync();
+                checks.Add(("cloud-rpc", ok, ok ? "connected" : "failed"));
+            }
+            catch (Exception ex)
+            {
+                checks.Add(("cloud-rpc", false, ex.Message));
+            }
+        }
+
+        // 11. Path traversal sanity check
+        checks.Add(("path-sanitizer", PathSanitizer.IsSafeFileName("test_save.dat"), "basic file safety check"));
+        checks.Add(("path-sanitizer-reject", !PathSanitizer.IsSafeFileName("../etc/passwd"), "traversal rejection check"));
+
+        // output
+        var pass = checks.Count(c => c.Pass);
+        var fail = checks.Count(c => !c.Pass);
+        foreach (var (name, ok, detail) in checks)
+        {
+            var icon = ok ? "OK" : "FAIL";
+            if (verbose || !ok)
+                Console.WriteLine($"  [{icon,-4}] {name}: {detail}");
+        }
+
+        Console.WriteLine($"\n{pass}/{checks.Count} checks passed" + (fail > 0 ? $", {fail} FAILED" : ""));
+        if (fail > 0)
+            Console.WriteLine("Run 'doctor --verbose' for full details, or fix the failing checks above.");
+
+        return fail == 0 ? 0 : 1;
+    }
+
     private static int Help()
     {
         Console.WriteLine("""
@@ -1816,6 +1933,7 @@ public static class Program
                                       (match / diff / missing); exit code 1 on any diff
                 rebuild                    tail-scan userdata -> registry.json
                 barcode <file> | barcode make <payload>   show/render barcode trailers
+                doctor [--cloud] [--verbose]             self-test: verify install, registry, pool, connectivity
             park flags: --verify re-enumerates + sha-compares each upload after parking
                         (set config VerifyAfterPark=true to always verify); --console re-enables
                         the Steam Console push for client-lane syncs (opt-in on newer builds)
