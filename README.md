@@ -325,7 +325,7 @@ cloud_log goes from `Access Denied` to `HTTP upload ... success` -> `Upload comp
 | **CloudRedirect nullify** | Point the redirect at an empty private folder. Game never sees Steam's copy again. | CR config (SCT owns it) |
 | **Lockfile blocker** | Windows refuses to create a folder where a file with that name exists. Delete the folder, plant a read-only file. Steam fails sync re-creation silently. | `lock` / `unlock` |
 | **Junction isolation** | Move the bucket into `%LOCALAPPDATA%\SCT\stash`, leave a junction. Steam reads/writes through the junction without knowing. | `relocate` / `unrelocate` |
-| **Hook lane** | `SteamCloudSave.dll` — steam_api64 shim / `load_dlls` / OST `[inject]`: flags the game, all ISteamRemoteStorage calls get shadowed under `D:\sct_shadow\<appid>\`. | `tools/steamcloudsave` |
+| **Hook lane** | `SteamCloudSave.dll` — auto-detecting steam_api64 shim / `load_dlls` / OST `[inject]`: flags the game, all ISteamRemoteStorage calls get shadowed under `%LOCALAPPDATA%\SCT\shadow\<appid>\` (no config file needed; it reads Steam from the registry and the appid from `steam_appid.txt`). Drop it in any loader. | `tools/steamcloudsave` |
 
 Some games get mad about the shadow. Those are called "unlocks".
 
@@ -378,13 +378,20 @@ Some things are just permanent. Like that one save from 2013. It hears you. It r
 | **SCT client lane** | running Steam session (no login): stage locally + CloudLogWatcher verdict | full |
 | **SCT posture tracker** | per-slot `real` / `provider` / `redirected` / `local` in registry.json | full |
 | **SCT container discovery** | `pool discover [--net]`: PoolDb + userdata + OST lua + CR host + SLS + GreenLuma | full |
-| **gbe_fork** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`) | shipped (tools/steamcloudsave) |
+| **gbe_fork / SLS fork** | `steam_settings\load_dlls\SteamCloudSave.dll` (auto `LoadLibraryW`; the DLL auto-detects steam/appid/shadow) | shipped (tools/steamcloudsave) |
 | **OpenSteamTool** | `[cloud]` + CloudRedirect host, `[inject]` for SteamCloudSave.dll, Lua pool snippet | shipped (integrations/opensteamtool) |
+| **universal mount** | `tools\steamcloudsave\install.ps1` auto-detects your loader (SHIM / `load_dlls` / OST `[inject]`) and mounts the DLL for you | shipped (tools/steamcloudsave/install.ps1) |
 | **CloudRedirect** | provider engine: local-folder provider answers Cloud.* RPCs locally, GUI shows "synced" — no UFS uploads | shipped (v2.6.4) |
 | **SCT appid proxy lane** | rpc lane with `sls-<game>/` namespacing into owned bucket | full |
 | **Ace SLS appId proxy** | in-process `CClientUnifiedServiceTransport` hook — the client-side version SCT ports in | research + lessons in APPID-PROXY.md |
 
 See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for the full matrix and naming contract.
+
+> **Honest note about "drop the DLL in any mod"**: only the `load_dlls`-family loaders
+> (gbe_fork / SLS fork / Goldberg), OST `[inject]`, and the SHIM rename can load a native
+> DLL into a game process. JS-plugin frameworks (BetterSteamTools, SteamTools, Millennium)
+> are Steam CEF UI plugins and have **no native DLL slot** — for those, SCT integrates at
+> the data layer (`registry.json` / `shadow-status.json`). See `tools/steamcloudsave/README.md`.
 
 ---
 
@@ -429,7 +436,7 @@ Crash log (it never happens, but if it does): `%LOCALAPPDATA%\SCT\tui-crash.log`
 | `src/SteamCloudTamper.Cli` | Command line face. Good old `cmd`, no sparkles. |
 | `src/SteamCloudTamper.Tui` | The pretty face. Spectre.Console, gradients, glow, a sine wave, QR rendering in the terminal. Yes we know the glow is excessive. No we won't remove it. |
 | `src/SteamCloudTamper` | The one exe that figures out which face you want (no args + console = TUI, flags = CLI). `tools/publish.ps1` builds the self-contained single file into `dist/`. |
-| `tools/steamcloudsave` | `SteamCloudSave.dll` — steam_api64 shim / shadow lane for games that should never touch your real cloud. |
+| `tools/steamcloudsave` | `SteamCloudSave.dll` — the drop-in binary: auto-detecting steam_api64 shim / shadow lane for games that should never touch your real cloud. `install.ps1` mounts it into whatever mod you run. |
 | `tools/ost-host` | Prebuilt OST/CloudRedirect host DLL bundle for the GUI-synced lane. |
 | `integrations/opensteamtool` | OST toml snippet, lua pool snippet, the "make the GUI show synced" writeup. |
 | `tests/SteamCloudTamper.Core.Tests` | xunit. The ones that SSH into Steam are the fun ones. |

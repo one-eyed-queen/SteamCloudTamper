@@ -6,6 +6,6 @@ $exe = $env:GCC
 if (-not $exe) { $exe = "gcc" }
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
-& $exe -shared -O2 -o "$dir\SteamCloudSave.dll" "$dir\SteamCloudSave.c"
+& $exe -shared -O2 -o "$dir\SteamCloudSave.dll" "$dir\SteamCloudSave.c" -static-libgcc -ladvapi32 -lshell32
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 Write-Host "built $dir\SteamCloudSave.dll"

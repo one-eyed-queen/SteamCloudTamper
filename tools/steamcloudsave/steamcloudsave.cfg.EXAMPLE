@@ -1,4 +1,11 @@
-# SteamCloudSave.dll - config (copy to steamcloudsave.cfg next to the DLL)
+# SteamCloudSave.dll - config (copy to steamcloudsave.cfg next to the DLL,
+# or %LOCALAPPDATA%\SCT\steamcloudsave.cfg, or point to it via SCT_SCS_CONFIG)
+
+# All keys are OPTIONAL. With no config at all the DLL autodetects everything:
+#   steamPath  <- Windows registry (HKCU/HKLM Valve\Steam)
+#   appid      <- <game folder>\steam_appid.txt
+#   shadowRoot <- %LOCALAPPDATA%\SCT\shadow\<appid>
+# So the common "drop the DLL into load_dlls / as steam_api64" case needs nothing.
 
 # Where the REAL steam_api64.dll lives (for passthrough when not in shadow mode)
 steamPath=D:\Steam
@@ -11,3 +18,12 @@ appid=91330
 
 # Optional: path to the SCT registry.json (read-only; logged at init)
 # registryPath=C:\Users\<you>\AppData\Local\SCT\registry.json
+
+# OPT-IN: path to the SCT CLI/EXE. When a shadow write completes, SCT is spawned
+# detached to park <appid> into the cloud in the background (rate-limited to one
+# spawn per 30s so a busy game can't fork-bomb). Default: off.
+# autoPark=D:\SteamCloudTamper\SteamCloudTamper.exe
+
+# Only autoPark once a shadow write is at least this many bytes. 0 = always.
+# A small number avoids parking on trivial 1-byte "last write" stubs.
+minShadowBytes=0
