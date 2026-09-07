@@ -45,13 +45,11 @@ public static class PathSanitizer
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
 
-        // strip directory components -- we only want the basename
-        var baseName = Path.GetFileName(name);
+        // strip directory components -- we only want the basename (Unix and, for
+        // cross-platform registry data, Windows separators too)
+        var baseName = name.Replace('\\', '/').Split('/').Last();
         if (string.IsNullOrEmpty(baseName) || baseName == "." || baseName == "..")
             return null;
-
-        // strip any remaining separator characters that Path.GetFileName might not catch
-        baseName = baseName.Replace("/", "").Replace("\\", "");
 
         // reject reserved names
         var upper = baseName.ToUpperInvariant().Split('.')[0];

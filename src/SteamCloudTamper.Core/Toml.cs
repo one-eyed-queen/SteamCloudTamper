@@ -88,7 +88,8 @@ public static class Toml
 
     private static string ParseSectionHeader(string raw, int line)
     {
-        var inner = raw.Substring(1, raw.Length - (raw.EndsWith(']') ? 2 : 1)).Trim();
+        if (!raw.EndsWith(']')) throw new TomlException("unterminated [section]", line + 1);
+        var inner = raw.Substring(1, raw.Length - 2).Trim();
         if (inner.Length == 0) throw new TomlException("empty [section]", line + 1);
         // normalize dotted keys with quoted segments: [a.b."c"] -> a.b.c
         return string.Join('.', inner.Split('.').Select(seg => seg.Trim().Trim('"').Trim()));
@@ -292,17 +293,16 @@ public static class Toml
                 sb.Append('[').Append(path).AppendLine("]");
             }
             foreach (var (key, value) in leaves)
-            {
-                sb.Append(topLevel ? key : "  ").Append(" = ").AppendLine(WriteValue(value));
-            }
+                sb.Append(key).Append(" = ").AppendLine(WriteValue(value));
             sb.AppendLine();
             topLevel = false;
         }
 
         foreach (var (key, value) in subs)
         {
+            if (value is not Dictionary<string, object?> subTable) continue;
             var subPath = path is null ? key : path + "." + key;
-            WriteSection(sb, subPath, (Dictionary<string, object?>)value, false);
+            WriteSection(sb, subPath, subTable, false);
         }
     }
 

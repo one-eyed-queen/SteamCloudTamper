@@ -83,19 +83,23 @@ public sealed class RoutingPolicy
 
     public Dictionary<string, object?> ToToml()
     {
+        var options = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["whitelist"] = Whitelist.OrderBy(x => x).Select(x => (object)x.ToString()).ToList(),
+            ["blacklist"] = Blacklist.OrderBy(x => x).Select(x => (object)x.ToString()).ToList(),
+        };
+        if (!string.IsNullOrEmpty(Comment)) options["comment"] = Comment;
+
+        var force = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (appId, rule) in Force)
+            force[appId.ToString()] = RuleToToml(rule);
+
         var r = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["options"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["whitelist"] = Whitelist.OrderBy(x => x).Select(x => (object)x.ToString()).ToList(),
-                ["blacklist"] = Blacklist.OrderBy(x => x).Select(x => (object)x.ToString()).ToList(),
-            },
-            ["force"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase),
+            ["options"] = options,
+            ["force"] = force,
         };
-        if (!string.IsNullOrEmpty(Comment)) ((Dictionary<string, object?>)r["options"])["comment"] = Comment;
         if (Default.IsMeaningful()) r["default"] = RuleToToml(Default);
-        foreach (var (appId, rule) in Force)
-            ((Dictionary<string, object?>)r["force"])[appId.ToString()] = RuleToToml(rule);
         return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["routing"] = r };
     }
 

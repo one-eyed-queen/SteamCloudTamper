@@ -1179,13 +1179,6 @@ public static class Program
         var dry = !Has(args, "--force") && config.DryRun;
         var steam = ResolveSteam(config);
 
-        var bucketDir = Path.Combine(steam, "userdata", uid.ToString(), gameAppId.ToString());
-        if (!Directory.Exists(bucketDir))
-        {
-            Console.WriteLine($"no local bucket {bucketDir}");
-            return 1;
-        }
-
         // ---- routing policy (routing.* in the config TOML) ----
         // deny list gives a hard refusal; a forced local rule or a forced lane is
         // applied HERE so the lane matrix below can honor it.
@@ -1219,6 +1212,13 @@ public static class Program
         {
             policyLane = "stage";
             Console.WriteLine($"route default {gameAppId}: local destination -> staging locally (stage lane)");
+        }
+
+        var bucketDir = Path.Combine(steam, "userdata", uid.ToString(), gameAppId.ToString());
+        if (!Directory.Exists(bucketDir))
+        {
+            Console.WriteLine($"no local bucket {bucketDir}");
+            return 1;
         }
 
         var registry = SctRegistry.Load();

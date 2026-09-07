@@ -128,9 +128,10 @@ public static class PoolDiscoverer
         // ---- OST Lua addappid hooks ------------------------------------------
         foreach (var hooked in SteamLocator.ListOstHookedAppIds(steamPath))
         {
+            var posture = SteamLocator.SyncPosture(steamPath, hooked);
             Add(new ContainerInfo(
                 hooked, null, ContainerKind.Activation, ContainerSource.OstLua,
-                "redirected", autoClouded?.Invoke(hooked) ?? false,
+                posture, autoClouded?.Invoke(hooked) ?? false,
                 "OST lua addappid hook - never touches Valve"));
         }
 

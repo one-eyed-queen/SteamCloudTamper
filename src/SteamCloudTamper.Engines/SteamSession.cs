@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using SteamKit2;
 using SteamKit2.Authentication;
@@ -95,6 +96,28 @@ public sealed class SteamSession : IAsyncDisposable
     }
 
     /// <summary>
+    /// Reads the account id out of a Steam refresh token (a JWT). Falls back to
+    /// masking a 64-bit value into its lower account id half.
+    /// </summary>
+    private static uint? AccountIdFromRefreshToken(string refreshToken)
+    {
+        try
+        {
+            var parts = refreshToken.Split('.');
+            if (parts.Length < 2) return null;
+            var encoded = parts[1].Replace('_', '/').Replace('-', '+')
+                .PadRight(parts[1].Length + (4 - parts[1].Length % 4) % 4, '=');
+            var payloadJson = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty("sub", out var sub)) return null;
+            var text = sub.GetString();
+            if (!ulong.TryParse(text, out var raw)) return null;
+            return raw >= 0x100000000ul ? (uint)(raw & 0xFFFFFFFFul) : (uint)raw;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
     /// Clears saved tokens (e.g. on auth failure or explicit logout).
     /// </summary>
     public static void ClearRefreshTokens()
@@ -179,10 +202,14 @@ public sealed class SteamSession : IAsyncDisposable
                     if (refreshToken is not null)
                     {
                         Event?.Invoke("Using cached refresh token...");
+                        var accountId = AccountIdFromRefreshToken(refreshToken)
+                            ?? throw new InvalidOperationException("Could not read account id from cached refresh token");
+                        var accessToken = await auth.GenerateAccessTokenForAppAsync(
+                            new SteamID(accountId, EUniverse.Public, EAccountType.Individual), refreshToken, true);
                         user.LogOn(new SteamUser.LogOnDetails
                         {
                             Username = _username,
-                            RefreshToken = refreshToken,
+                            AccessToken = accessToken.AccessToken,
                         });
                     }
                     else
@@ -269,7 +296,7 @@ public sealed class SteamSession : IAsyncDisposable
 
     private void OnDisconnected(SteamClient.DisconnectedCallback cb)
     {
-        Event?.Invoke($"Disconnected: {cb.UserInitiated ? "user-initiated" : "server-side"}");
+        Event?.Invoke($"Disconnected: {(cb.UserInitiated ? "user-initiated" : "server-side")}");
         Disconnected?.Invoke();
 
         // auto-reconnect on server-side disconnects (up to MaxReconnectAttempts)

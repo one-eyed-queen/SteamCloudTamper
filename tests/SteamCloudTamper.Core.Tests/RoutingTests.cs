@@ -4,6 +4,20 @@ namespace SteamCloudTamper.Core.Tests;
 
 public class TomlParsingTests
 {
+    private static Dictionary<string, object?> T(Dictionary<string, object?> root, params string[] path)
+    {
+        Dictionary<string, object?> cur = root;
+        foreach (var key in path)
+        {
+            Assert.True(cur.TryGetValue(key, out var next), $"missing table: {key}");
+            cur = Assert.IsType<Dictionary<string, object?>>(next);
+        }
+        return cur;
+    }
+
+    private static List<object?> L(Dictionary<string, object?> table, string key)
+        => Assert.IsType<List<object?>>(table[key]);
+
     [Fact]
     public void Parses_Sections_Strings_Ints_Bools_Arrays()
     {
@@ -20,17 +34,16 @@ public class TomlParsingTests
             blacklist = []
             """);
 
-        var cfg = (Dictionary<string, object?>)root["config"];
+        var cfg = T(root, "config");
         Assert.Equal(true, cfg["dryRun"]);
         Assert.Equal(false, cfg["verifyAfterPark"]);
         Assert.Equal("cloud", cfg["name"]);
         Assert.Equal(42L, cfg["size"]);
 
-        var opts = (Dictionary<string, object?>)root["routing"]["options"];
-        var whitelist = (List<object?>)opts["whitelist"];
-        Assert.Equal(2, whitelist.Count);
-        Assert.Equal("440", whitelist[0]);
-        Assert.Equal("570", whitelist[1]);
+        var opts = T(root, "routing", "options");
+        Assert.Equal(2, L(opts, "whitelist").Count);
+        Assert.Equal("440", L(opts, "whitelist")[0]);
+        Assert.Equal("570", L(opts, "whitelist")[1]);
     }
 
     [Fact]
@@ -42,8 +55,7 @@ public class TomlParsingTests
             storage = "480"
             """);
 
-        var force = (Dictionary<string, object?>)root["routing"]["force"];
-        var rule = (Dictionary<string, object?>)force["440"];
+        var rule = T(root, "routing", "force", "440");
         Assert.Equal("cloud", rule["target"]);
         Assert.Equal("480", rule["storage"]);
     }
@@ -57,27 +69,27 @@ public class TomlParsingTests
             hints = { theme = "dark" }
             """);
 
-        var cfg = (Dictionary<string, object?>)root["config"];
-        var proxies = (Dictionary<string, object?>)cfg["proxies"];
+        var cfg = T(root, "config");
+        var proxies = Assert.IsType<Dictionary<string, object?>>(cfg["proxies"]);
         Assert.Equal("480", proxies["588650"]);
         Assert.Equal("480", proxies["0"]);
-        var hints = (Dictionary<string, object?>)cfg["hints"];
+        var hints = Assert.IsType<Dictionary<string, object?>>(cfg["hints"]);
         Assert.Equal("dark", hints["theme"]);
     }
 
     [Fact]
     public void Comments_Inside_Strings_Are_Not_Stripped()
     {
-        var root = Toml.Parse("""[config]\nlabel = "a#b"\n""");
-        var cfg = (Dictionary<string, object?>)root["config"];
+        var root = Toml.Parse("[config]\nlabel = \"a#b\"\n");
+        var cfg = T(root, "config");
         Assert.Equal("a#b", cfg["label"]);
     }
 
     [Fact]
     public void Escaped_Basic_String_Decodes()
     {
-        var root = Toml.Parse("""[config]\npath = "C:\\SCT\\data"\n""");
-        var cfg = (Dictionary<string, object?>)root["config"];
+        var root = Toml.Parse("[config]\npath = \"C:\\\\SCT\\\\data\"\n");
+        var cfg = T(root, "config");
         Assert.Equal(@"C:\SCT\data", cfg["path"]);
     }
 
@@ -85,8 +97,8 @@ public class TomlParsingTests
     public void Empty_Array_Parses_To_Empty_List()
     {
         var root = Toml.Parse("[routing.options]\nblacklist = []\n");
-        var opts = (Dictionary<string, object?>)root["routing"]["options"];
-        Assert.Empty((List<object?>)opts["blacklist"]);
+        var opts = T(root, "routing", "options");
+        Assert.Empty(L(opts, "blacklist"));
     }
 
     [Fact]
@@ -106,10 +118,8 @@ public class TomlParsingTests
         var written = Toml.Write(root);
         var reparsed = Toml.Parse(written);
 
-        var cfg = (Dictionary<string, object?>)reparsed["config"];
-        Assert.Equal(true, cfg["dryRun"]);
-        var force = (Dictionary<string, object?>)reparsed["routing"]["force"];
-        var rule = (Dictionary<string, object?>)force["440"];
+        Assert.Equal(true, T(reparsed, "config")["dryRun"]);
+        var rule = T(reparsed, "routing", "force", "440");
         Assert.Equal("cloud", rule["target"]);
         Assert.Equal("480", rule["storage"]);
     }

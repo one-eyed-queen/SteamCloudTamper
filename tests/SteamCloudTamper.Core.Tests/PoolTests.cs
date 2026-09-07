@@ -531,9 +531,14 @@ public class PoolDiscovererTests
         {
             File.WriteAllText(Path.Combine(steam, "opensteamtool.toml"), "[cloud]\nenabled = true\nlibrary = \"cloud_redirect.dll\"\n");
             File.WriteAllText(Path.Combine(steam, "cloud_redirect.dll"), "");
+            // only addappid-hooked buckets land in the CR provider (per-appid)
+            Directory.CreateDirectory(Path.Combine(steam, "config", "lua"));
+            File.WriteAllText(Path.Combine(steam, "config", "lua", "addappid.lua"), "addappid(440)");
+
             var found = PoolDiscoverer.Discover(steam);
             Assert.Contains(found, c => c.AppId == 0 && c.Source == ContainerSource.OstToml && c.Posture == "provider");
-            Assert.All(found.Where(c => c.AppId != 0), c => Assert.Equal("provider", c.Posture)); // CR loaded = provider everywhere
+            Assert.Equal("provider", found.First(c => c.AppId == 440).Posture);   // hooked -> folder provider
+            Assert.Equal("real", found.First(c => c.AppId == 7).Posture);          // unhooked -> Valve even with CR loaded
         }
         finally
         {
