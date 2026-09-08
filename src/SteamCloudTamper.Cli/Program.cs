@@ -1328,7 +1328,7 @@ public static class Program
                 var tail = ReadTail(files[i].FullName, Math.Min(files[i].Length, Barcode.TailWindowBytes));
                 if (Barcode.TryDecodeTail(tail, out var payload, out _))
                 {
-                    var (game, _, _) = Barcode.Parse(payload);
+                    var (game, _, _, _) = Barcode.Parse(payload);
                     if (game == gameAppId && !stealth)
                     {
                         Console.WriteLine($"  skip {files[i].Name}: already tagged (barcode present)");
@@ -1336,7 +1336,7 @@ public static class Program
                     }
                 }
                 var originalBytes = File.ReadAllBytes(files[i].FullName);
-                var trailer = Barcode.PackTrailer(gameAppId.ToString(), uid.ToString(), today);
+                var trailer = Barcode.PackTrailer(gameAppId.ToString(), uid.ToString(), today, files[i].Name);
                 plans.Add((files[i].Name, d, originalBytes.Concat(trailer).ToArray()));
             }
         }
@@ -1527,7 +1527,7 @@ public static class Program
     {
         var start = Math.Max(0, tagged.Length - Barcode.TailWindowBytes);
         if (!Barcode.TryDecodeTail(tagged.AsSpan(start), out var payload, out _)) return null;
-        var (game, _, _) = Barcode.Parse(payload);
+        var (game, _, _, _) = Barcode.Parse(payload);
         return game;
     }
 
@@ -1581,7 +1581,7 @@ public static class Program
         }
         else
         {
-            var (game, _, _) = Barcode.Parse(payload);
+            var (game, _, _, _) = Barcode.Parse(payload);
             Console.WriteLine($"barcode: {payload} (game {game})");
         }
 
@@ -1853,7 +1853,7 @@ public static class Program
             Console.WriteLine($"{path}: no SCT barcode trailer");
             return 1;
         }
-        var (game, uid, date) = Barcode.Parse(payload);
+        var (game, uid, date, _) = Barcode.Parse(payload);
         Console.WriteLine($"{path} ({info.Length}b):");
         Console.WriteLine($"  trailer    : {trailerLen}b at end (magic {Barcode.Magic})");
         Console.WriteLine($"  payload    : {payload}");

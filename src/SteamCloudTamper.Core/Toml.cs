@@ -24,6 +24,9 @@ public static class Toml
         var root = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var lines = text.Replace("\r\n", "\n").Split('\n');
         string? currentSection = null;
+        // When the most recent header was [[a.b]], key=value lines target the
+        // NEWEST element of that array, so we keep a direct pointer to it.
+        Dictionary<string, object?>? currentArrayTable = null;
 
         for (var i = 0; i < lines.Length; i++)
         {
@@ -32,17 +35,20 @@ public static class Toml
 
             if (raw.StartsWith("[[", StringComparison.Ordinal))
             {
-                // array-of-tables is unsupported in this subset - skip
+                // array-of-tables: append a new element table to the list under the
+                // dotted path. Preserved so a merge/rewrite never silently drops it.
+                currentSection = ParseArrayHeader(raw, i);
+                currentArrayTable = AppendTableArray(root, currentSection);
                 continue;
             }
 
             if (raw[0] == '[')
             {
-                var section = ParseSectionHeader(raw, i);
-                currentSection = section;
+                currentSection = ParseSectionHeader(raw, i);
+                currentArrayTable = null;
                 // EnsureTable nests dotted headers ("routing.options" -> routing . options),
                 // matching the writer's structure and the model readers.
-                EnsureTable(root, section);
+                EnsureTable(root, currentSection);
                 continue;
             }
 
@@ -53,9 +59,10 @@ public static class Toml
             var valText = raw[(eq + 1)..].Trim();
             var value = ParseValue(valText, i);
 
-            var target = currentSection is null
-                ? root
-                : (Dictionary<string, object?>)EnsureTable(root, currentSection);
+            var target = currentArrayTable
+                ?? (currentSection is null
+                    ? root
+                    : (Dictionary<string, object?>)EnsureTable(root, currentSection));
 
             SetKeyPath(target, key, value, i);
         }
@@ -93,6 +100,52 @@ public static class Toml
         if (inner.Length == 0) throw new TomlException("empty [section]", line + 1);
         // normalize dotted keys with quoted segments: [a.b."c"] -> a.b.c
         return string.Join('.', inner.Split('.').Select(seg => seg.Trim().Trim('"').Trim()));
+    }
+
+    private static string ParseArrayHeader(string raw, int line)
+    {
+        if (!raw.EndsWith("]]")) throw new TomlException("unterminated [[array-of-tables]]", line + 1);
+        var inner = raw.Substring(2, raw.Length - 4).Trim();
+        if (inner.Length == 0) throw new TomlException("empty [[section]]", line + 1);
+        return string.Join('.', inner.Split('.').Select(seg => seg.Trim().Trim('"').Trim()));
+    }
+
+    /// <summary>
+    /// Appends a fresh table element to the array-of-tables list under the dotted
+    /// path (creating the list if needed) and returns it, so later key=value lines
+    /// populate the newest element — same semantics as TOML.
+    /// </summary>
+    private static Dictionary<string, object?> AppendTableArray(Dictionary<string, object?> root, string path)
+    {
+        var parts = path.Split('.');
+        var cur = root;
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            var part = parts[i].Trim().Trim('"').Trim();
+            if (cur.TryGetValue(part, out var next))
+            {
+                // an intermediate path that is itself an array-of-tables: descend
+                // into its newest element (pathological but legal in TOML)
+                if (next is List<Dictionary<string, object?>> intermArr && intermArr.Count > 0)
+                {
+                    cur = intermArr[^1];
+                    continue;
+                }
+                if (next is Dictionary<string, object?> d) { cur = d; continue; }
+            }
+            var fresh = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            cur[part] = fresh;
+            cur = fresh;
+        }
+        var last = parts[^1].Trim().Trim('"').Trim();
+        if (!cur.TryGetValue(last, out var existing) || existing is not List<Dictionary<string, object?>> list)
+        {
+            list = new List<Dictionary<string, object?>>();
+            cur[last] = list;
+        }
+        var tbl = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        list.Add(tbl);
+        return tbl;
     }
 
     private static object? ParseValue(string text, int line)
@@ -201,12 +254,19 @@ public static class Toml
         var cur = root;
         foreach (var part in parts)
         {
-            if (!cur.TryGetValue(part, out var next) || next is not Dictionary<string, object?> d)
+            if (cur.TryGetValue(part, out var next))
             {
-                d = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                cur[part] = d;
+                if (next is Dictionary<string, object?> d) { cur = d; continue; }
+                // an array-of-tables at this level: descend into its newest element
+                if (next is List<Dictionary<string, object?>> arr && arr.Count > 0)
+                {
+                    cur = arr[^1];
+                    continue;
+                }
             }
-            cur = d;
+            var fresh = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            cur[part] = fresh;
+            cur = fresh;
         }
         return cur;
     }
@@ -218,12 +278,18 @@ public static class Toml
         for (var i = 0; i < parts.Length - 1; i++)
         {
             var p = parts[i].Trim().Trim('"').Trim();
-            if (!cur.TryGetValue(p, out var next) || next is not Dictionary<string, object?> d)
+            if (cur.TryGetValue(p, out var next))
             {
-                d = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                cur[p] = d;
+                if (next is Dictionary<string, object?> d) { cur = d; continue; }
+                if (next is List<Dictionary<string, object?>> arr && arr.Count > 0)
+                {
+                    cur = arr[^1];
+                    continue;
+                }
             }
-            cur = d;
+            var fresh = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            cur[p] = fresh;
+            cur = fresh;
         }
         var last = parts[^1].Trim().Trim('"').Trim();
         if (last.Length == 0) throw new TomlException("empty key", line + 1);
@@ -283,8 +349,14 @@ public static class Toml
 
     private static void WriteSection(StringBuilder sb, string? path, Dictionary<string, object?> table, bool topLevel)
     {
-        var leaves = table.Where(kv => kv.Value is not Dictionary<string, object?>).ToList();
-        var subs = table.Where(kv => kv.Value is Dictionary<string, object?>).ToList();
+        var leaves = table
+            .Where(kv => kv.Value is not Dictionary<string, object?>
+                       && kv.Value is not List<Dictionary<string, object?>>)
+            .ToList();
+        var subs = table
+            .Where(kv => kv.Value is Dictionary<string, object?>
+                       || kv.Value is List<Dictionary<string, object?>>)
+            .ToList();
 
         if (leaves.Count > 0)
         {
@@ -300,9 +372,20 @@ public static class Toml
 
         foreach (var (key, value) in subs)
         {
-            if (value is not Dictionary<string, object?> subTable) continue;
             var subPath = path is null ? key : path + "." + key;
-            WriteSection(sb, subPath, subTable, false);
+            switch (value)
+            {
+                case Dictionary<string, object?> subTable:
+                    WriteSection(sb, subPath, subTable, false);
+                    break;
+                case List<Dictionary<string, object?>> subTables:
+                    foreach (var element in subTables)
+                    {
+                        sb.Append("[[").Append(subPath).AppendLine("]]");
+                        WriteSection(sb, subPath, element, false);
+                    }
+                    break;
+            }
         }
     }
 

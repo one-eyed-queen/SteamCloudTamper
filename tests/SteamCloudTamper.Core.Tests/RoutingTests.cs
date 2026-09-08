@@ -130,6 +130,74 @@ public class TomlParsingTests
         Assert.Throws<Toml.TomlException>(() => Toml.Parse("[unterminated"));
         Assert.Throws<Toml.TomlException>(() => Toml.Parse("[a]\nb = \"unterminated\n"));
     }
+
+    [Fact]
+    public void Array_Of_Tables_RoundTrips_Instead_Of_Being_Dropped()
+    {
+        var text = """
+            [config]
+            dryRun = true
+
+            [[external.registry]]
+            name = "slot_a"
+            size = 10
+
+            [[external.registry]]
+            name = "slot_b"
+            size = 20
+
+            [routing.options]
+            blacklist = [ "999" ]
+            """;
+
+        var root = Toml.Parse(text);
+        var written = Toml.Write(root);
+        var reparsed = Toml.Parse(written);
+
+        // both array elements survive the round-trip (this was silently
+        // erased before array-of-tables support was added)
+        var reg = Assert.IsType<List<Dictionary<string, object?>>>(T(reparsed, "external")["registry"]);
+        Assert.Equal(2, reg.Count);
+        Assert.Equal("slot_a", reg[0]["name"]);
+        Assert.Equal("slot_b", reg[1]["name"]);
+        Assert.Equal(10L, reg[0]["size"]);
+        // neighbors in the same file are preserved too
+        Assert.Equal(true, T(reparsed, "config")["dryRun"]);
+        Assert.Equal("999", Assert.IsType<List<object?>>(T(reparsed, "routing", "options")["blacklist"])[0]);
+    }
+
+    [Fact]
+    public void Routing_Save_Preserves_Array_Of_Tables_From_HandEdited_File()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"sct_merge_{Guid.NewGuid():N}.toml");
+        File.WriteAllText(path, """
+            [config]
+            dryRun = true
+
+            [[external.registry]]
+            name = "keeper"
+            """);
+
+        try
+        {
+            // a routing Save() merges into the existing file; an array-of-tables
+            // section elsewhere in it must survive the rewrite untouched
+            var p = new RoutingPolicy { Blacklist = [123u] };
+            p.Save(path);
+            var text = File.ReadAllText(path);
+
+            var root = Toml.Parse(text);
+            Assert.Equal(true, T(root, "config")["dryRun"]);
+            var reg = Assert.IsType<List<Dictionary<string, object?>>>(T(root, "external")["registry"]);
+            Assert.Equal("keeper", reg[0]["name"]);
+            var blacklist = Assert.IsType<List<object?>>(T(root, "routing", "options")["blacklist"]);
+            Assert.Equal("123", blacklist[0]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }
 
 public class RoutingPolicyTests

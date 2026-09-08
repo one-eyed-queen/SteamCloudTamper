@@ -239,6 +239,8 @@ public class PathSanitizerTests
         var baseDir = Path.Combine(Path.GetTempPath(), "sct_test_base");
         var safePath = Path.Combine(baseDir, "subdir", "file.txt");
         var traversalPath = Path.Combine(baseDir, "..", "outside", "file.txt");
+        // a sibling whose name merely STARTS WITH the base dir must NOT pass
+        var siblingPath = Path.Combine(Path.GetTempPath(), "sct_test_base-evil", "file.txt");
 
         // safe path should resolve without throwing
         var resolved = PathSanitizer.ResolveInside(baseDir, safePath);
@@ -246,6 +248,9 @@ public class PathSanitizerTests
 
         // traversal path should throw
         Assert.Throws<InvalidOperationException>(() => PathSanitizer.ResolveInside(baseDir, traversalPath));
+
+        // sibling prefix should throw too (boundary-aware containment)
+        Assert.Throws<InvalidOperationException>(() => PathSanitizer.ResolveInside(baseDir, siblingPath));
     }
 }
 

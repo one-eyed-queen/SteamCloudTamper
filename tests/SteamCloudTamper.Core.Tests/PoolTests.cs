@@ -13,10 +13,33 @@ public class BarcodeTests
         Assert.True(Barcode.TryDecode(trailer, out var payload));
         Assert.Equal("588650|1201110076|09082026", payload);
 
-        var (game, uid, date) = Barcode.Parse(payload);
+        var (game, uid, date, _) = Barcode.Parse(payload);
         Assert.Equal(588650u, game);
         Assert.Equal("1201110076", uid);
         Assert.Equal(new DateOnly(2026, 8, 9), date);
+    }
+
+    [Fact]
+    public void TrailerCarriesOptionalOriginalNameForStealthRecovery()
+    {
+        var trailer = Barcode.PackTrailer("588650", "1201110076", new DateOnly(2026, 8, 9), "autosave.sav");
+        Assert.True(Barcode.TryDecode(trailer, out var payload));
+        var (game, uid, date, name) = Barcode.Parse(payload);
+        Assert.Equal(588650u, game);
+        Assert.Equal("1201110076", uid);
+        Assert.Equal(new DateOnly(2026, 8, 9), date);
+        Assert.Equal("autosave.sav", name);
+
+        // old-style 3-part trailers (no name) still parse with name = null
+        var legacy = Barcode.PackTrailer("588650|1201110076|09082026");
+        Assert.True(Barcode.TryDecode(legacy, out _));
+        Assert.Null(Barcode.Parse("588650|1201110076|09082026").OriginalName);
+
+        // a name containing the separator is dropped (stays decodable, name = null)
+        var weird = Barcode.PackTrailer("588650", "1201110076", new DateOnly(2026, 8, 9), "a|b.sav");
+        Assert.True(Barcode.TryDecode(weird, out var weirdPayload));
+        Assert.Equal(3, weirdPayload.Split('|').Length);
+        Assert.Null(Barcode.Parse(weirdPayload).OriginalName);
     }
 
     [Fact]
@@ -446,29 +469,61 @@ public class RegistryTests
     }
 
     [Fact]
-    public void SyncDiscoveredPersistsSnapshot()
+    public void RebuildRegistryRecoversOriginalNameForStealthSaves()
     {
         var steam = Path.Combine(Path.GetTempPath(), $"sct_steam_{Guid.NewGuid():N}");
         var uid = 1201110076u;
-        Directory.CreateDirectory(Path.Combine(steam, "userdata", uid.ToString(), "480", "remote"));
-        Directory.CreateDirectory(Path.Combine(steam, "config", "lua"));
-        File.WriteAllText(Path.Combine(steam, "config", "lua", "588650.lua"), "addappid(588650)\n");
-        var path = Path.Combine(Path.GetTempPath(), $"sct_reg_{Guid.NewGuid():N}.json");
+        var remote = Path.Combine(steam, "userdata", uid.ToString(), "480", "remote");
+        Directory.CreateDirectory(remote);
+
+        // a stealth stored name has no underscore, so the filename alone can't
+        // reveal the original; the barcode (OPTIONAL 4th field) must.
+        const string stealthName = "k002efc2a00.sav"; // 3580 -> k0000dfcc, but keep any hex
+        var trailer = Barcode.PackTrailer("3580", uid.ToString(), new DateOnly(2026, 9, 1), "autosave.sav");
+        var tagged = new byte[] { 0xDE, 0xAD }.Concat(trailer).ToArray();
+        File.WriteAllBytes(Path.Combine(remote, stealthName), tagged);
         try
         {
-            var reg = new SctRegistry();
-            reg.SyncDiscovered(steam, path: path);
-            Assert.Contains(reg.Discovered, c => c.AppId == 480);
-            Assert.Contains(reg.Discovered, c => c.AppId == 588650 && c.Source == ContainerSource.OstLua);
-
-            var loaded = SctRegistry.Load(path);
-            Assert.Contains(loaded.Discovered, c => c.AppId == 480);
-            Assert.Contains(loaded.Discovered, c => c.AppId == 7);
+            var reg = PoolScanner.RebuildRegistry(steam);
+            var slot = Assert.Single(reg.Slots);
+            Assert.Equal(3580u, slot.GameAppId);
+            Assert.Equal("autosave.sav", slot.OriginalName);
+            Assert.Equal(stealthName, slot.StoredName);
         }
         finally
         {
             Directory.Delete(steam, recursive: true);
-            File.Delete(path);
+        }
+    }
+}
+
+public class PoolScannerRebuildTests
+{
+    [Fact]
+    public void RebuildRegistryRecoversOriginalNameForStealthSaves()
+    {
+        var steam = Path.Combine(Path.GetTempPath(), $"sct_steam_{Guid.NewGuid():N}");
+        var uid = 1201110076u;
+        var remote = Path.Combine(steam, "userdata", uid.ToString(), "480", "remote");
+        Directory.CreateDirectory(remote);
+
+        // a stealth stored name has no underscore, so the filename alone can't
+        // reveal the original; the barcode (OPTIONAL 4th field) must.
+        const string stealthName = "k002efc2a00.sav";
+        var trailer = Barcode.PackTrailer("3580", uid.ToString(), new DateOnly(2026, 9, 1), "autosave.sav");
+        var tagged = new byte[] { 0xDE, 0xAD }.Concat(trailer).ToArray();
+        File.WriteAllBytes(Path.Combine(remote, stealthName), tagged);
+        try
+        {
+            var reg = PoolScanner.RebuildRegistry(steam);
+            var slot = Assert.Single(reg.Slots);
+            Assert.Equal(3580u, slot.GameAppId);
+            Assert.Equal("autosave.sav", slot.OriginalName);
+            Assert.Equal(stealthName, slot.StoredName);
+        }
+        finally
+        {
+            Directory.Delete(steam, recursive: true);
         }
     }
 }

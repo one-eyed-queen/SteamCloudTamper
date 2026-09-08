@@ -75,7 +75,10 @@ public sealed class SteamWebClient
             if (!resp.IsSuccessStatusCode) return null;
 
             var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-            return bytes.Length > 0 && bytes.Length < 4096 && System.Text.Encoding.UTF8.GetString(bytes).Contains("<html") ? null : bytes;
+            // AllowAutoRedirect means an unauthenticated request lands on the Steam
+            // login/guard page (200). Spot it by its markers, not by a size guess -
+            // a legitimate small save may legitimately contain "<html".
+            return LooksLikeSteamLoginPage(bytes) ? null : bytes;
         }
         catch (HttpRequestException)
         {
@@ -85,6 +88,21 @@ public sealed class SteamWebClient
         {
             return null;
         }
+    }
+
+    private static bool LooksLikeSteamLoginPage(byte[] raw)
+    {
+        if (raw.Length > 256 * 1024) return false; // no login/guard page is this big
+        string body;
+        try { body = System.Text.Encoding.UTF8.GetString(raw); }
+        catch { return false; }
+        if (!body.Contains("<html", StringComparison.OrdinalIgnoreCase)) return false;
+        if (body.Contains("<title>Sign In", StringComparison.OrdinalIgnoreCase)) return true;
+        if (body.Contains("loginpage", StringComparison.OrdinalIgnoreCase)) return true;
+        if (body.Contains("action_login", StringComparison.OrdinalIgnoreCase)) return true;
+        if (body.Contains("g-recaptcha", StringComparison.OrdinalIgnoreCase)) return true;
+        if (body.Contains("Enter your credentials", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private async Task<string> GetStringAsync(string url, CancellationToken ct)
@@ -103,12 +121,14 @@ public sealed class SteamWebClient
             throw new InvalidOperationException($"Timed out contacting {url}");
         }
 
-        if (resp.StatusCode == HttpStatusCode.Redirect && resp.Headers.Location?.ToString().Contains("login", StringComparison.OrdinalIgnoreCase) == true
-            || resp.StatusCode == HttpStatusCode.Forbidden)
+        // AllowAutoRedirect=true follows redirects, so a redirect status never
+        // surfaces here; an unauthenticated request instead returns the login page
+        // as a 200, which EnsureSuccessStatusCode + the login-marker check catch.
+        if (resp.StatusCode == HttpStatusCode.Forbidden)
             throw new InvalidOperationException("Not logged into Steam store (set SCT_COOKIE to a session cookie)");
         resp.EnsureSuccessStatusCode();
         var body = await resp.Content.ReadAsStringAsync(ct);
-        if (body.Length < 256 && body.Contains("<html", StringComparison.OrdinalIgnoreCase))
+        if (LooksLikeSteamLoginPage(System.Text.Encoding.UTF8.GetBytes(body)))
             throw new InvalidOperationException($"Unexpected HTML response from {url} - session may be expired (renew SCT_COOKIE)");
         return body;
     }

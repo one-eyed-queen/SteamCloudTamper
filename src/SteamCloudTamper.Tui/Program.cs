@@ -505,7 +505,7 @@ public static class Program
         var start = Math.Max(0, p.Tagged.Length - Barcode.TailWindowBytes);
         if (Barcode.TryDecodeTail(p.Tagged.AsSpan(start), out var payload, out _))
         {
-            var (game, _, _) = Barcode.Parse(payload);
+            var (game, _, _, _) = Barcode.Parse(payload);
             return game;
         }
         return 0;

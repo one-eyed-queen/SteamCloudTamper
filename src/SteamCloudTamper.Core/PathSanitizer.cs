@@ -64,12 +64,17 @@ public static class PathSanitizer
     /// <summary>
     /// Ensures <paramref name="targetPath"/> is inside <paramref name="baseDir"/>.
     /// Returns the resolved safe path, or throws if traversal is detected.
+    /// The containment check is boundary-aware, so a sibling like
+    /// "<base>-evil/x" is NOT treated as being inside "<base>".
     /// </summary>
     public static string ResolveInside(string baseDir, string targetPath)
     {
         var fullBase = Path.GetFullPath(baseDir);
         var fullTarget = Path.GetFullPath(targetPath);
-        if (!fullTarget.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
+        var baseWithSep = fullBase.EndsWith(Path.DirectorySeparatorChar)
+            ? fullBase
+            : fullBase + Path.DirectorySeparatorChar;
+        if (!fullTarget.StartsWith(baseWithSep, StringComparison.OrdinalIgnoreCase) && fullTarget != fullBase)
             throw new InvalidOperationException(
                 $"Path traversal detected: '{targetPath}' resolves outside the intended directory '{baseDir}'");
         return fullTarget;

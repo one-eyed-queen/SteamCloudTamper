@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SteamKit2;
@@ -69,7 +70,12 @@ public sealed class SteamSession : IAsyncDisposable
     /// <summary>Fires when the session disconnects (for reconnection logic).</summary>
     public event Action? Disconnected;
 
-    /// <summary>Saves a refresh token to disk for later reconnection without re-auth.</summary>
+    /// <summary>DPAPI protection marker prefix for at-rest token values.</summary>
+    private const string DpapiPrefix = "SCTDPAPI1:";
+
+    /// <summary>Saves a refresh token to disk for later reconnection without re-auth.
+    /// On Windows the token is DPAPI-encrypted for the current user; on other OSes
+    /// it is stored with owner-only permissions (0600).</summary>
     public static void SaveRefreshToken(string username, string token)
     {
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SCT");
@@ -78,8 +84,11 @@ public sealed class SteamSession : IAsyncDisposable
         var data = File.Exists(path)
             ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? new()
             : new Dictionary<string, string>();
-        data[username] = token;
+        data[username] = ProtectAtRest(token);
         File.WriteAllText(path, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
+        // owner-only on POSIX; no group/other read
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     /// <summary>Loads a previously saved refresh token for the given username. Returns null if none.</summary>
@@ -90,9 +99,45 @@ public sealed class SteamSession : IAsyncDisposable
         try
         {
             var data = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path));
-            return data?.TryGetValue(username, out var token) == true ? token : null;
+            return data?.TryGetValue(username, out var token) == true ? UnprotectAtRest(token) : null;
         }
         catch { return null; }
+    }
+
+    private static string ProtectAtRest(string value)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                // CurrentUser scope keyed to the Windows session - unreadable by any other account
+                var blob = ProtectedData.Protect(
+                    Encoding.UTF8.GetBytes(value),
+                    null /* entropy shared across SCT sessions for this user */,
+                    DataProtectionScope.CurrentUser);
+                return DpapiPrefix + Convert.ToBase64String(blob);
+            }
+            catch
+            {
+                // DPAPI can fail (e.g. service account context); degrade to owner-only plaintext
+            }
+        }
+        return value;
+    }
+
+    private static string? UnprotectAtRest(string value)
+    {
+        if (value.StartsWith(DpapiPrefix, StringComparison.Ordinal))
+        {
+            if (!OperatingSystem.IsWindows()) return null; // written elsewhere on Windows, unreadable here
+            try
+            {
+                var blob = Convert.FromBase64String(value[DpapiPrefix.Length..]);
+                return Encoding.UTF8.GetString(ProtectedData.Unprotect(blob, null, DataProtectionScope.CurrentUser));
+            }
+            catch { return null; }
+        }
+        return value; // legacy plaintext from before at-rest protection
     }
 
     /// <summary>

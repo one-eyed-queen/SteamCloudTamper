@@ -51,6 +51,7 @@ static uint32_t    g_targetAppId = 0;
 static uint32_t    g_minShadowBytes = 0;
 static int         g_resolveMode = 0; // 0=auto 1=path 2=inproc
 static HMODULE     g_real = NULL;
+static int         g_realOwned = 0; // 1 when g_real came from LoadLibraryA (we own a ref)
 static int         g_inited = 0;
 static int         g_loaderKind = 0; // 0=unknown 1=shim 2=load_dlls(gbe/sls) 3=ost-inject 4=greenluma
 static char        g_dllPath[MAX_PATH] = {0};
@@ -246,10 +247,70 @@ static void mkdirs(const char* path)
     CreateDirectoryA(tmp, NULL);
 }
 
+// Reduce a file argument from the game to a safe single basename, mirroring the
+// C# PathSanitizer. The shadow lane writes <root>\<appid>\<file>; a ..\..\ in
+// <file> would escape that directory (this ecosystem runs on modified binaries by
+// design, so the game's own input may not be trustworthy).
+static const char* shadowSafeName(const char* file, char* out, size_t outLen)
+{
+    if (!file || !file[0]) return NULL;
+    size_t len = 0;
+    const char* p = file;
+    const char* base = file;
+    for (; *p; p++)
+    {
+        if (*p == '\\' || *p == '/')
+        {
+            base = p + 1;      // last separator -> basename start
+            len = 0;
+        }
+        else len++;
+    }
+    if (len == 0) return NULL;              // trailing separator / empty basename
+    if (!strcmp(base, ".") || !strcmp(base, "..")) return NULL;
+
+    // reject reserved Windows device names (CON, PRN, NUL, COM1, LPT1, ...)
+    {
+        char upper[MAX_PATH];
+        size_t i = 0;
+        while (i < len && i < sizeof(upper) - 1)
+        {
+            char c = base[i];
+            upper[i] = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
+            i++;
+        }
+        upper[i] = 0;
+        char* dot = strchr(upper, '.');
+        size_t rootLen = dot ? (size_t)(dot - upper) : i;
+        static const char* reserves[] = {
+            "CON","PRN","AUX","NUL",
+            "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+            "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
+            "CLOCK$","CONFIG$", NULL
+        };
+        for (int r = 0; reserves[r]; r++)
+            if (rootLen == strlen(reserves[r]) && !_strnicmp(base, reserves[r], rootLen)) return NULL;
+    }
+
+    if (len >= outLen) len = outLen - 1;
+    memcpy(out, base, len);
+    out[len] = 0;
+    return out;
+}
+
 // shadow layout: <shadowRoot>\<appid>\<file>
 static void shadowPathFor(const char* file, char* out, size_t outLen)
 {
-    snprintf(out, outLen, "%s\\%u\\%s", g_shadowRoot, g_targetAppId, file);
+    char safe[MAX_PATH];
+    const char* use = shadowSafeName(file, safe, sizeof(safe));
+    if (!use)
+    {
+        // unsafe/empty name: produce an empty path. FileWrite then fails its fopen
+        // (empty name), FileRead/FileSize return empty, FileDelete deletes nothing.
+        out[0] = 0;
+        return;
+    }
+    snprintf(out, outLen, "%s\\%u\\%s", g_shadowRoot, g_targetAppId, use);
 }
 
 static HMODULE realModule(void)
@@ -268,7 +329,10 @@ static HMODULE realModule(void)
         if (!inProc) inProc = GetModuleHandleA("steamclient64.dll");
         if (inProc)
         {
+            // Borrowed: GetModuleHandle does NOT increment the refcount, so we must
+            // never FreeLibrary this later - the emulator/game still owns it.
             g_real = inProc;
+            g_realOwned = 0;
             sctLog("sct: passthrough -> already-loaded %s",
                    GetModuleHandleA("steam_api64.dll") ? "steam_api64.dll" : "steamclient64.dll");
             return g_real;
@@ -285,6 +349,7 @@ static HMODULE realModule(void)
     char dllPath[MAX_PATH * 2];
     snprintf(dllPath, sizeof(dllPath), "%s\\steam_api64.dll", g_steamPath);
     g_real = LoadLibraryA(dllPath);
+    g_realOwned = g_real != NULL; // we took a reference and may release it
     if (!g_real) sctLog("sct: load real %s failed %lu", dllPath, GetLastError());
     return g_real;
 }
@@ -581,7 +646,13 @@ __declspec(dllexport) int WINAPI SteamCloudSave_Init(const char* configPath)
 
 __declspec(dllexport) void WINAPI SteamCloudSave_Shutdown(void)
 {
-    if (g_real) { FreeLibrary(g_real); g_real = NULL; }
+    // Only release a handle we actually took a reference on (LoadLibraryA path).
+    // A borrowed in-proc module (GetModuleHandle) must be left alone - freeing it
+    // would unload the real steam_api64/steamclient64 that the emulator and game
+    // are still using.
+    if (g_real && g_realOwned) { FreeLibrary(g_real); }
+    g_real = NULL;
+    g_realOwned = 0;
     sctLog("sct: shutdown");
 }
 

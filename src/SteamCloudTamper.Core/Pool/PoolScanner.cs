@@ -7,7 +7,8 @@ public sealed record TaggedFile(
     string FileName,
     long Size,
     string? UserId3,
-    DateOnly? TaggedOn);
+    DateOnly? TaggedOn,
+    string? BarcodeName = null);
 
 /// <summary>
 /// Tail-scan of local userdata: reads only the LAST bytes of each bucket file
@@ -54,11 +55,11 @@ public static class PoolScanner
 
                 var tail = ReadTail(file, Math.Min(info.Length, Barcode.TailWindowBytes));
                 if (!Barcode.TryDecodeTail(tail, out var payload, out _)) continue;
-                var (game, uid, date) = Barcode.Parse(payload);
+                var (game, uid, date, name) = Barcode.Parse(payload);
                 if (game == 0) continue;
                 if (uid == "probe") continue; // pool probe marker file - not a parked save
 
-                found.Add(new TaggedFile(game, storageAppId, accountId3, info.Name, info.Length, uid, date));
+                found.Add(new TaggedFile(game, storageAppId, accountId3, info.Name, info.Length, uid, date, name));
             }
         }
     }
@@ -78,11 +79,16 @@ public static class PoolScanner
             var (tagged, _) = ScanUserData(accountDir, account3);
             foreach (var t in tagged)
             {
+                // the barcode can carry the true original name (recoverable even for
+                // stealth hashed stored names); fall back to decoding the filename.
+                var originalName = !string.IsNullOrEmpty(t.BarcodeName)
+                    ? t.BarcodeName
+                    : Ferry.UnparkName(t.FileName).OriginalName;
                 // rebuild the barcode payload faithfully (both seps included, even when uid/date are absent)
                 var payload = $"{t.GameAppId}{Barcode.Sep}{t.UserId3 ?? string.Empty}{Barcode.Sep}{(t.TaggedOn.HasValue ? t.TaggedOn.Value.ToString("ddMMyyyy") : string.Empty)}";
                 reg.Upsert(new GameSlot(
                     t.GameAppId, t.StorageAppId, t.FileName,
-                    Ferry.UnparkName(t.FileName).OriginalName,
+                    originalName,
                     t.Size, DateTime.UtcNow, payload,
                     "scanned"));
             }

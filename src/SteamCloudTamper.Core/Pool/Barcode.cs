@@ -22,8 +22,19 @@ public static class Barcode
 
     public const int TrailerOverheadBytes = 8 + 4 + 5; // len fields + crc + magic "SCTB1"
 
-    public static byte[] PackTrailer(string gameAppId, string userId3, DateOnly date)
-        => PackTrailer($"{gameAppId}{Sep}{userId3}{Sep}{date:ddMMyyyy}");
+    public static byte[] PackTrailer(string gameAppId, string userId3, DateOnly date, string? originalName = null)
+    {
+        var payload = $"{gameAppId}{Sep}{userId3}{Sep}{date:ddMMyyyy}";
+        // OPTIONAL 4th field: the original file name. Only present when it can be
+        // embedded unambiguously (no separator inside); lets a fresh-install rebuild
+        // recover the true name even for stealth/hashed stored names. Older files
+        // without it keep decoding via backward-compatible 2/3-part parsing.
+        if (!string.IsNullOrEmpty(originalName)
+            && !originalName.Contains(Sep)
+            && originalName.Length <= 1024)
+            payload += $"{Sep}{originalName}";
+        return PackTrailer(payload);
+    }
 
     public static byte[] PackTrailer(string payload)
     {
@@ -62,18 +73,22 @@ public static class Barcode
 
         try { payload = Encoding.UTF8.GetString(payloadSpan); } catch { return false; }
         var parts = payload.Split(Sep);
-        return parts.Length is 2 or 3
+        // 2 parts: appid|uid   3 parts: appid|uid|ddMMyyyy   4 parts: + originalName
+        return parts.Length is >= 2 and <= 4
                && uint.TryParse(parts[0], out _)
-               && (parts.Length == 2 || parts[2].Length == 8);
+               && (parts.Length < 3 || parts[2].Length == 8);
     }
 
-    public static (uint GameAppId, string? UserId3, DateOnly? TaggedOn) Parse(string payload)
+    public static (uint GameAppId, string? UserId3, DateOnly? TaggedOn, string? OriginalName) Parse(string payload)
     {
         var parts = payload.Split(Sep);
-        if (parts.Length < 2 || !uint.TryParse(parts[0], out var app)) return (0, null, null);
+        if (parts.Length < 2 || !uint.TryParse(parts[0], out var app)) return (0, null, null, null);
         var date = parts.Length >= 3 && DateTime.TryParseExact(parts[2], "ddMMyyyy", null, System.Globalization.DateTimeStyles.None, out var d)
             ? (DateOnly?)DateOnly.FromDateTime(d) : null;
-        return (app, parts[1], date);
+        // name may itself contain the separator; everything after the (appid,uid,date)
+        // prefix counts as the name so embedded '|' never shifts field positions
+        var name = parts.Length > 3 ? string.Join(Sep, parts[3..]) : null;
+        return (app, parts[1], date, name);
     }
 
     /// <summary>Finds a valid trailer inside <paramref name="tail"/> (the last bytes of a file).</summary>
